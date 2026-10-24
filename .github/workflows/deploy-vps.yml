@@ -145,13 +145,68 @@ jobs:
               echo "::error::git pull --ff-only failed — VPS checkout has local divergence. Resolve manually over SSH (git status/log); this workflow will NOT force-reset because .env lives alongside the repo."
               exit 1
             }
+            # Ensure .env has GF_SECURITY_ADMIN_PASSWORD and non-placeholder SECRET_KEY
+            # (never prints or logs secret values).
+            if ! grep -q '^GF_SECURITY_ADMIN_PASSWORD=.' .env; then
+              echo "GF_SECURITY_ADMIN_PASSWORD=$(openssl rand -hex 16)" >> .env
+              echo "[deploy] populated missing GF_SECURITY_ADMIN_PASSWORD in .env"
+            fi
+            if grep -q '^SECRET_KEY=change-me-in-production-use-64-char-hex' .env; then
+              sed -i "s/^SECRET_KEY=change-me-in-production-use-64-char-hex.*/SECRET_KEY=$(openssl rand -hex 32)/" .env
+              echo "[deploy] replaced placeholder SECRET_KEY in .env with generated key"
+            fi
             echo "[deploy] validating prod compose (fails fast if VPS .env :? guards missing):"
             docker compose -f docker-compose.prod.yml config --quiet || {
               echo "::error::docker compose config failed — VPS .env is missing POSTGRES_PASSWORD / DATABASE_URL / SECRET_KEY / GF_SECURITY_ADMIN_PASSWORD (see :? guards in docker-compose.prod.yml)."
               exit 1
             }
+            # Ensure TLS certificate volume (devtrack-ai-prod_certs) has fullchain.pem + privkey.pem
+            # so nginx starts cleanly on first boot. Uses $VPS_FOLDER/certs/{fullchain.pem,privkey.pem}
+            # (e.g. uploaded from home.pl) if present; otherwise generates a temporary bootstrap cert.
+            docker volume create devtrack-ai-prod_certs >/dev/null
+            docker volume create devtrack-ai-prod_certbot_www >/dev/null
+            if [ -s "$VPS_FOLDER/certs/fullchain.pem" ] && [ -s "$VPS_FOLDER/certs/privkey.pem" ]; then
+              echo "[deploy] installing custom TLS certificate from $VPS_FOLDER/certs/ into certs volume"
+              docker run --rm \
+                -v "$VPS_FOLDER/certs:/host_certs:ro" \
+                -v devtrack-ai-prod_certs:/certs \
+                alpine:3.20 sh -c 'cp -f /host_certs/fullchain.pem /certs/fullchain.pem && cp -f /host_certs/privkey.pem /certs/privkey.pem && rm -f /certs/.self_signed'
+            else
+              docker run --rm -v devtrack-ai-prod_certs:/certs alpine:3.20 sh -c '
+                if [ ! -s /certs/fullchain.pem ] || [ ! -s /certs/privkey.pem ]; then
+                  echo "[deploy] generating temporary bootstrap TLS certificate for ct-academia.pl"
+                  apk add --no-cache openssl >/dev/null
+                  openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+                    -subj "/CN=ct-academia.pl" \
+                    -keyout /certs/privkey.pem -out /certs/fullchain.pem >/dev/null 2>&1
+                  touch /certs/.self_signed
+                fi
+              '
+            fi
             echo "[deploy] building + booting production stack:"
             docker compose -f docker-compose.prod.yml up -d --build
+            # If still using the temporary self-signed cert, attempt automatic Let's Encrypt webroot issuance
+            if docker run --rm -v devtrack-ai-prod_certs:/certs alpine:3.20 test -f /certs/.self_signed; then
+              echo "[deploy] attempting Let's Encrypt webroot certificate issuance for ct-academia.pl..."
+              if docker run --rm \
+                -v devtrack-ai-prod_certs:/etc/letsencrypt \
+                -v devtrack-ai-prod_certbot_www:/var/www/certbot \
+                certbot/certbot:latest certonly --webroot -w /var/www/certbot \
+                -d ct-academia.pl --non-interactive --agree-tos --register-unsafely-without-email; then
+                docker run --rm -v devtrack-ai-prod_certs:/certs alpine:3.20 sh -c '
+                  cp -f /certs/live/ct-academia.pl/fullchain.pem /certs/fullchain.pem &&
+                  cp -f /certs/live/ct-academia.pl/privkey.pem /certs/privkey.pem &&
+                  rm -f /certs/.self_signed
+                '
+                docker compose -f docker-compose.prod.yml exec -T nginx nginx -s reload || true
+                echo "[deploy] Let's Encrypt certificate installed and nginx reloaded."
+              else
+                echo "::warning::Certbot webroot issuance did not complete; nginx is running with bootstrap certificate until home.pl certs are placed in $VPS_FOLDER/certs/{fullchain.pem,privkey.pem}."
+                docker compose -f docker-compose.prod.yml exec -T nginx nginx -s reload || true
+              fi
+            else
+              docker compose -f docker-compose.prod.yml exec -T nginx nginx -s reload || true
+            fi
             echo "[deploy] stack status:"
             docker compose -f docker-compose.prod.yml ps
           REMOTE_SCRIPT
@@ -166,7 +221,12 @@ jobs:
             echo "Health attempt $i/$ATTEMPTS ..."
             if curl -fsS --max-time 15 https://ct-academia.pl/api/v1/health \
               && curl -fsS --max-time 15 https://ct-academia.pl/healthz; then
-              echo "Health gate PASSED."
+              echo "Health gate PASSED (trusted TLS)."
+              ok=1
+              break
+            elif curl -fsSk --max-time 15 https://ct-academia.pl/api/v1/health \
+              && curl -fsSk --max-time 15 https://ct-academia.pl/healthz; then
+              echo "::warning::Health gate PASSED over HTTPS with bootstrap self-signed cert (upload home.pl cert to $VPS_FOLDER/certs/ for full CA chain)."
               ok=1
               break
             fi

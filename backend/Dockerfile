@@ -15,6 +15,8 @@ WORKDIR /code
 # probe /api/v1/health via stdlib urllib, and the worker healthcheck uses a
 # stdlib TCP dial — nothing here needs a shell HTTP client.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      git \
       libpq5 \
     && rm -rf /var/lib/apt/lists/*
 

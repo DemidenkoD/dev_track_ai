@@ -25,6 +25,8 @@ playwright-report/
 .env.local
 .env.*.local
 !.env.example
+certs/
+.opencode/
 
 # IDE & OS
 .vscode/

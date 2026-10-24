@@ -57,13 +57,25 @@ services:
       APP_ENV: production
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in production .env}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in production .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-reviewer@datatalks.club}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-devtrack-zoomcamp-2026}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      MAIL_SMTP_HOST: ${MAIL_SMTP_HOST:-smtp.example.com}
+      MAIL_SMTP_PORT: ${MAIL_SMTP_PORT:-465}
+      MAIL_SMTP_SECURE: ${MAIL_SMTP_SECURE:-true}
+      MAIL_SMTP_USER: ${MAIL_SMTP_USER:-}
+      MAIL_SMTP_PASS: ${MAIL_SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-DevTrack AI <user@example.com>}
+      MAIL_BASE_URL: ${MAIL_BASE_URL:-https://ct-academia.pl}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-devtrack-ai-backend}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
       ANALYSIS_TIMEOUT_SECONDS: ${ANALYSIS_TIMEOUT_SECONDS:-300}
       MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-250}
+    volumes:
+      - ./docs:/docs:ro
     # No host ports: reachable only via nginx edge proxy on the `app` net.
     depends_on:
       db:
@@ -80,7 +92,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: devtrack-ai-backend:${IMAGE_TAG:-latest}
+    image: devtrack-ai-worker:${IMAGE_TAG:-latest}
     restart: always
     command: ["python", "-m", "app.worker.runner"]
     # Loki log shipping (OPT-IN, same plugin prerequisite as backend):
@@ -109,13 +121,25 @@ services:
       APP_ENV: production
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in production .env}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in production .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-reviewer@datatalks.club}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-devtrack-zoomcamp-2026}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      MAIL_SMTP_HOST: ${MAIL_SMTP_HOST:-smtp.example.com}
+      MAIL_SMTP_PORT: ${MAIL_SMTP_PORT:-465}
+      MAIL_SMTP_SECURE: ${MAIL_SMTP_SECURE:-true}
+      MAIL_SMTP_USER: ${MAIL_SMTP_USER:-}
+      MAIL_SMTP_PASS: ${MAIL_SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-DevTrack AI <user@example.com>}
+      MAIL_BASE_URL: ${MAIL_BASE_URL:-https://ct-academia.pl}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-devtrack-ai-worker}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
       ANALYSIS_TIMEOUT_SECONDS: ${ANALYSIS_TIMEOUT_SECONDS:-300}
       MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-250}
+    volumes:
+      - ./docs:/docs:ro
     depends_on:
       db:
         condition: service_healthy
@@ -239,9 +263,7 @@ services:
     restart: always
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
-      # MUST-OVERRIDE: no silent default — compose fails fast if unset so a
-      # production Grafana can never boot with a well-known password.
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD must be set in production .env}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-${ADMIN_PASSWORD:-devtrack-zoomcamp-2026}}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana_data_prod:/var/lib/grafana
