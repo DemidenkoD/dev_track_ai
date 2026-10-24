@@ -4,6 +4,8 @@ Track 1 owns this file. Secrets (SECRET_KEY, GEMINI_API_KEY, MAIL_SMTP_PASS,
 ADMIN_PASSWORD) must never be printed, logged, or committed.
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -67,7 +69,7 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     @model_validator(mode="after")
-    def _enforce_prod_secrets(self) -> Settings:
+    def _enforce_prod_secrets(self) -> "Settings":
         """Refuse the dev placeholder SECRET_KEY in production.
 
         Tests/local boot run with APP_ENV != production and are unaffected.
