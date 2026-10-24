@@ -1,0 +1,13 @@
+# DevTrack AI — Grafana dashboard provisioning.
+apiVersion: 1
+
+providers:
+  - name: "devtrack"
+    orgId: 1
+    folder: "DevTrack AI"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

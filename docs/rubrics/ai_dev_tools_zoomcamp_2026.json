@@ -1,0 +1,278 @@
+{
+  "rubric_id": "ai-dev-tools-zoomcamp-2026",
+  "title": "DataTalksClub AI Dev Tools Zoomcamp 2026 — Project Rubric",
+  "course_name": "AI Dev Tools Zoomcamp 2026",
+  "source_url": "https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/tree/main/project",
+  "version": "2026.1.0",
+  "retrieved_at": "2026-10-24T00:00:00Z",
+  "is_official": true,
+  "max_points": 24,
+  "passing_threshold": 10,
+  "criteria": [
+    {
+      "code": "problem_description",
+      "name": "Problem Description",
+      "display_order": 1,
+      "max_points": 2,
+      "description": "Clarity and depth of the problem description and how the system addresses it.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "Problem description is missing or vague."
+        },
+        {
+          "points": 1,
+          "description": "Problem is described, but the target audience, motivation, or how the application solves it is unclear."
+        },
+        {
+          "points": 2,
+          "description": "Problem is clearly and thoroughly described, explaining who has the problem, why existing approaches fall short, and how the project solves it."
+        }
+      ],
+      "required_evidence_types": ["readme", "documentation"]
+    },
+    {
+      "code": "product_specification",
+      "name": "Product Specification",
+      "display_order": 2,
+      "max_points": 2,
+      "description": "Structured product specification guiding the system's design and implementation.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No product specification provided."
+        },
+        {
+          "points": 1,
+          "description": "Basic product specification exists but lacks functional requirements, architecture details, or acceptance criteria."
+        },
+        {
+          "points": 2,
+          "description": "Comprehensive product specification maintained in the repository covering features, architecture, data model, security, and acceptance criteria."
+        }
+      ],
+      "required_evidence_types": ["documentation", "source_file"]
+    },
+    {
+      "code": "agent_team_specification",
+      "name": "Agent Team Specification",
+      "display_order": 3,
+      "max_points": 2,
+      "description": "Definition of specialized AI agents, roles, boundaries, and coordination protocols.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No agent team specification or specialized agent roles defined."
+        },
+        {
+          "points": 1,
+          "description": "Agents are defined informally without clear role boundaries, structured outputs, or coordination rules."
+        },
+        {
+          "points": 2,
+          "description": "Explicit agent team specification defining specialized development and runtime agents, their responsibilities, file ownership, tools, and structured schemas."
+        }
+      ],
+      "required_evidence_types": ["documentation", "agent_config", "source_file"]
+    },
+    {
+      "code": "context_management",
+      "name": "Context Management",
+      "display_order": 4,
+      "max_points": 2,
+      "description": "Use of hierarchical rules (AGENTS.md), modular skills, and progressive disclosure.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No context management files (AGENTS.md, skills, or project rules) in the repository."
+        },
+        {
+          "points": 1,
+          "description": "Single monolithic instructions file without scoped rules or reusable skills."
+        },
+        {
+          "points": 2,
+          "description": "Structured context management using hierarchical AGENTS.md files and modular, on-demand skills (.agents/skills/) kept in sync with the codebase."
+        }
+      ],
+      "required_evidence_types": ["agent_config", "documentation"]
+    },
+    {
+      "code": "application",
+      "name": "Application",
+      "display_order": 5,
+      "max_points": 2,
+      "description": "End-to-end functionality of frontend, backend, and persistent database storage.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No working application, or a missing frontend, backend or persistent storage."
+        },
+        {
+          "points": 1,
+          "description": "Frontend, backend and database exist but are not fully connected."
+        },
+        {
+          "points": 2,
+          "description": "Full-stack application works end-to-end and runs locally with a single command."
+        }
+      ],
+      "required_evidence_types": ["source_file", "docker_compose", "readme"]
+    },
+    {
+      "code": "testing",
+      "name": "Testing",
+      "display_order": 6,
+      "max_points": 2,
+      "description": "Automated unit, integration, and end-to-end test suite coverage.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No automated tests exist in the repository."
+        },
+        {
+          "points": 1,
+          "description": "Only basic unit tests exist for isolated functions without integration or E2E coverage."
+        },
+        {
+          "points": 2,
+          "description": "Comprehensive automated tests covering backend unit/integration tests (Pytest) and frontend/end-to-end tests (Playwright/Vitest), runnable via a single command."
+        }
+      ],
+      "required_evidence_types": ["test_result", "source_file", "ci_workflow"]
+    },
+    {
+      "code": "containerization",
+      "name": "Containerization",
+      "display_order": 7,
+      "max_points": 2,
+      "description": "Dockerization of all application services and multi-container orchestration.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "Application is not containerized."
+        },
+        {
+          "points": 1,
+          "description": "Dockerfile exists for part of the app, but full stack cannot be started with Docker Compose."
+        },
+        {
+          "points": 2,
+          "description": "All services (frontend, backend, worker, database, reverse proxy) are containerized and orchestrated with Docker Compose."
+        }
+      ],
+      "required_evidence_types": ["docker_compose", "source_file"]
+    },
+    {
+      "code": "deployment",
+      "name": "Deployment",
+      "display_order": 8,
+      "max_points": 2,
+      "description": "Live cloud/VPS deployment accessible over HTTPS.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "Application is not deployed to a remote environment."
+        },
+        {
+          "points": 1,
+          "description": "Deployment configuration or instructions exist, or deployment is only accessible over plain HTTP / unstable."
+        },
+        {
+          "points": 2,
+          "description": "Application is deployed on a live server/cloud environment with HTTPS, health checks, and documented reviewer access."
+        }
+      ],
+      "required_evidence_types": ["deployment_url", "readme", "source_file"]
+    },
+    {
+      "code": "ci_cd",
+      "name": "CI/CD",
+      "display_order": 9,
+      "max_points": 3,
+      "description": "Continuous Integration testing and Continuous Deployment pipeline.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No CI/CD pipeline."
+        },
+        {
+          "points": 1,
+          "description": "CI automatically runs tests on every pull request."
+        },
+        {
+          "points": 2,
+          "description": "CI runs tests and CD deploys automatically."
+        },
+        {
+          "points": 3,
+          "description": "CI runs tests, CD deploys to development, and production deployment is manual."
+        }
+      ],
+      "required_evidence_types": ["ci_workflow"]
+    },
+    {
+      "code": "observability",
+      "name": "Observability",
+      "display_order": 10,
+      "max_points": 2,
+      "description": "Telemetry instrumentation (metrics, structured logs, traces) and dashboards.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No observability or telemetry instrumentation."
+        },
+        {
+          "points": 1,
+          "description": "Basic application logging or health endpoint without structured metrics, distributed tracing, or dashboards."
+        },
+        {
+          "points": 2,
+          "description": "Full OpenTelemetry instrumentation exporting metrics (Prometheus), logs (Loki), and traces (Tempo) visualized in Grafana dashboards."
+        }
+      ],
+      "required_evidence_types": ["observability_config", "source_file", "docker_compose"]
+    },
+    {
+      "code": "alerting_on_user_impact",
+      "name": "Alerting on User Impact",
+      "display_order": 11,
+      "max_points": 1,
+      "description": "Actionable alerting rules triggered by user-facing SLIs/error rates or latency spikes.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No alerting configured, or alerts only track low-level host CPU without user impact correlation."
+        },
+        {
+          "points": 1,
+          "description": "Actionable alerts configured on user-impacting symptoms (HTTP 5xx error rate, high p95 latency, failed analysis jobs, or endpoint downtime)."
+        }
+      ],
+      "required_evidence_types": ["observability_config", "source_file"]
+    },
+    {
+      "code": "on_call_agent",
+      "name": "On-Call Agent",
+      "display_order": 12,
+      "max_points": 2,
+      "description": "Bounded, read-only AI on-call agent capable of diagnosing incidents from telemetry and logs.",
+      "scoring_levels": [
+        {
+          "points": 0,
+          "description": "No on-call diagnostic agent implemented."
+        },
+        {
+          "points": 1,
+          "description": "Basic log summarizer without structured incident diagnosis, telemetry querying, or strict read-only safety boundaries."
+        },
+        {
+          "points": 2,
+          "description": "Bounded read-only on-call agent integrated with metrics/logs/traces and runbooks that diagnoses alerts, cites evidence, and proposes safe remediation steps."
+        }
+      ],
+      "required_evidence_types": ["source_file", "agent_config", "test_result"]
+    }
+  ]
+}
+

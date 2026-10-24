@@ -1,0 +1,35 @@
+# DevTrack AI — Prometheus scrape config (local + prod share this file).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  # Never attach PII (emails, JWTs, API keys) as external labels.
+  external_labels:
+    service: "devtrack-ai"
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # FastAPI backend exposes Prometheus metrics on :8000 (Track 1 wires
+  # prometheus_client; path /metrics). Adjust the metrics path if Track 1
+  # chooses a different exposition route.
+  - job_name: "backend"
+    static_configs:
+      - targets: ["backend:8000"]
+    metrics_path: /metrics
+
+  # Worker shares the backend image; if Track 3 adds a worker metrics port,
+  # add it here. Until then the worker is observed via backend + pg metrics.
+  - job_name: "worker"
+    static_configs:
+      - targets: ["worker:8000"]
+    metrics_path: /metrics
+
+  # Postgres exporter is optional (uncomment when postgres_exporter is added):
+  # - job_name: "postgres"
+  #   static_configs:
+  #     - targets: ["postgres-exporter:9187"]

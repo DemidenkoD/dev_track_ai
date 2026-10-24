@@ -1,0 +1,64 @@
+# DevTrack AI — User-impact alert rules (Phase 4 / on-call-diagnostics skill).
+# Alert names consumed by the bounded read-only On-Call Agent:
+#   HighHttp5xxErrorRate, HighApiLatencyP95, AnalysisWorkerJobFailures,
+#   TargetDeploymentDown
+# Telemetry MUST NOT contain emails, JWTs, or API keys (infra/AGENTS.md).
+groups:
+  - name: devtrack-user-impact
+    interval: 30s
+    rules:
+      # 1. High HTTP 5xx rate: user-visible errors from the FastAPI backend.
+      - alert: HighHttp5xxErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: "High HTTP 5xx error rate on DevTrack AI backend"
+          description: "5xx share of HTTP responses exceeds 5% for 5 minutes."
+          runbook: "Query Prometheus HighHttp5xxErrorRate, correlate Loki {app='backend'} error logs and Tempo traces via the On-Call Agent (read-only)."
+
+      # 2. p95 API latency above the 2s SLO.
+      - alert: HighApiLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: "API p95 latency above 2s SLO"
+          description: "p95 request latency exceeds 2 seconds for 10 minutes."
+          runbook: "Check Tempo trace summaries for slow spans (git clone, scanners, Gemini calls); consider raising ANALYSIS_TIMEOUT_SECONDS or enforcing shallow clones."
+
+      # 3. Stuck/failed analysis jobs (PostgreSQL-backed worker queue).
+      # Works with a `analysis_runs_failed_total` counter OR the generic
+      # fallback below if Track 3 has not wired the counter yet.
+      - alert: AnalysisWorkerJobFailures
+        expr: |
+          increase(analysis_runs_failed_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          service: worker
+        annotations:
+          summary: "Analysis worker job failures spiking"
+          description: "More than 3 analysis runs failed in the last 15 minutes."
+          runbook: "Inspect worker logs {app='worker'} in Loki and recent analysis_runs rows (status=failed, error_message) via read-only DB counts."
+
+      # 4. Deployment health: backend /api/v1/health probe failing.
+      - alert: TargetDeploymentDown
+        expr: |
+          up{job="backend"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: "Backend deployment target down"
+          description: "Prometheus cannot scrape the backend (up==0) for 3 minutes; user traffic is likely failing."
+          runbook: "Check docker status / reverse-proxy logs; verify GET /api/v1/health; On-Call Agent read-only diagnosis only."

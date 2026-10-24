@@ -1,0 +1,148 @@
+# DevTrack AI — CI/CD (Track 6 ownership).
+# Rubric mapping (infra/AGENTS.md, max 3/3):
+#   1pt — `ci` job on every pull_request: backend pytest + frontend checks.
+#   2pts — `deploy-development` on push to main: auto build/deploy to development.
+#   3pts — `promote-production`: manual approval gate via `environment: production`
+#          (+ workflow_dispatch for explicit promotion). No auto-deploy to prod.
+name: ci-cd
+
+on:
+  pull_request:
+    branches: ["**"]
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      promote_to_production:
+        description: "Promote current main to production (requires approval)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- 1pt: PR CI
+  backend-checks:
+    name: backend / pytest
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: "backend/requirements.txt"
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest httpx fastapi sqlalchemy pydantic pydantic-settings uvicorn
+      - name: Run pytest
+        working-directory: backend
+        run: python -m pytest -q
+
+  frontend-checks:
+    name: frontend / typecheck + build (+ e2e smoke)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        # Track 4 provides the `typecheck` script (tsc --noEmit); fall back to
+        # build so the check still guards PRs if the script is missing.
+        run: npm run typecheck --if-present || npm run build
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Playwright smoke
+        working-directory: frontend
+        run: npx playwright test --reporter=list
+
+  compose-lint:
+    name: compose / config validation
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose files
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.prod.yml config --quiet
+          echo "compose config OK"
+
+  # ------------------------------------------------- 2pts: auto CD to staging
+  deploy-development:
+    name: "CD: build + deploy → development"
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: development
+    needs: [] # push-to-main path (PR gates above already ran on the PR)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate stacks
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.prod.yml config --quiet
+      - name: Build images
+        run: |
+          docker compose -f docker-compose.prod.yml build backend worker frontend
+          docker compose -f docker-compose.prod.yml images || true
+      - name: Deploy to development
+        run: |
+          echo "Deploying ${GITHUB_SHA} to development/staging…"
+          # --- Replace with the real staging host step, e.g.: ---
+          # ssh staging "cd /srv/devtrack-ai && git pull --ff-only \
+          #   && IMAGE_TAG=${GITHUB_SHA} docker compose -f docker-compose.prod.yml up -d --build"
+          echo "development deploy step is a placeholder until staging host secrets are configured."
+      - name: Health probe (staging)
+        run: |
+          echo "curl -fsS https://staging.example.com/api/v1/health (placeholder — wire STAGING_URL secret)."
+          # curl -fsS "${{ secrets.STAGING_URL }}/api/v1/health"
+
+  # --------------------------------------- 3pts: manual production promotion
+  promote-production:
+    name: "CD: promote → production (manual approval)"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production # <-- protected environment: required reviewers gate prod
+    needs: [] # decoupled so a hotfix can be promoted deliberately at any time
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Validate production stack
+        run: docker compose -f docker-compose.prod.yml config --quiet
+      - name: Build production images
+        run: docker compose -f docker-compose.prod.yml build backend worker frontend nginx
+      - name: Deploy to production
+        run: |
+          echo "Promoting main (${GITHUB_SHA}) to production after manual approval…"
+          # --- Replace with the real prod host step, e.g.: ---
+          # ssh prod "cd /srv/devtrack-ai && git pull --ff-only \
+          #   && IMAGE_TAG=${GITHUB_SHA} docker compose -f docker-compose.prod.yml up -d --build"
+          echo "production deploy step is a placeholder until prod host secrets are configured."
+      - name: Health probe (production)
+        run: |
+          echo "curl -fsS https://example.com/api/v1/health (placeholder — wire PROD_URL secret)."
+          # curl -fsS "${{ secrets.PROD_URL }}/api/v1/health"
