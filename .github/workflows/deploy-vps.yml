@@ -170,6 +170,21 @@ jobs:
               echo "::error::docker compose config failed — check docker daemon permissions or VPS .env variables."
               exit 1
             }
+            # Prepare certificate files if home.pl / commercial cert format was uploaded
+            mkdir -p "$VPS_FOLDER/certs"
+            if [ ! -s "$VPS_FOLDER/certs/fullchain.pem" ] && [ -s "$VPS_FOLDER/certs/certificate.crt" ]; then
+              echo "[deploy] assembling fullchain.pem from certificate.crt and intermediate.crt"
+              if [ -s "$VPS_FOLDER/certs/intermediate.crt" ]; then
+                cat "$VPS_FOLDER/certs/certificate.crt" "$VPS_FOLDER/certs/intermediate.crt" > "$VPS_FOLDER/certs/fullchain.pem"
+              else
+                cat "$VPS_FOLDER/certs/certificate.crt" > "$VPS_FOLDER/certs/fullchain.pem"
+              fi
+            fi
+            if [ ! -s "$VPS_FOLDER/certs/privkey.pem" ] && [ -s "$VPS_FOLDER/certs/private.key" ]; then
+              echo "[deploy] copying private.key to privkey.pem"
+              cp -f "$VPS_FOLDER/certs/private.key" "$VPS_FOLDER/certs/privkey.pem"
+            fi
+
             # Ensure TLS certificate volume (devtrack-ai-prod_certs) has fullchain.pem + privkey.pem
             # so nginx starts cleanly on first boot. Uses $VPS_FOLDER/certs/{fullchain.pem,privkey.pem}
             # (e.g. uploaded from home.pl) if present; otherwise generates a temporary bootstrap cert.
