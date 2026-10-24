@@ -1,0 +1,203 @@
+# DevTrack AI — VPS deploy to ct-academia.pl (Track 6 ownership).
+#
+# ADDITIVE workflow: does NOT replace `.github/workflows/ci-cd.yml` (which keeps
+# the 3/3 rubric jobs: PR CI + auto CD dev + manual prod promotion). This file
+# only boots the real user VPS on push to main (or manual re-run).
+#
+# Required GitHub Environment: `development`
+#   - secret  VPS_SSH_KEY : private OpenSSH key for VPS_USER (never echoed/logged)
+#   - secret-or-var VPS_IP     : VPS public IP (DNS ct-academia.pl points here)
+#   - secret-or-var VPS_USER   : existing VPS user with docker permission
+#   - secret-or-var VPS_FOLDER : absolute repo path on VPS (e.g. /srv/devtrack-ai)
+#   NOTE: values below read `secrets.X` + `vars.X` concatenated so they resolve
+#   whether you stored them as Environment Secrets or Environment Variables
+#   (one side will simply be empty). If you store all four as secrets, the
+#   `vars.` half is a harmless no-op.
+#
+# VPS prerequisites (already done per user context, verified here — NOT created):
+#   - docker engine + compose plugin installed (`docker compose version` works)
+#   - repo already cloned at VPS_FOLDER, VPS_USER can run `docker` (no sudo/sg)
+#   - production `.env` already filled at VPS_FOLDER/.env with at least:
+#       POSTGRES_PASSWORD / DATABASE_URL / SECRET_KEY / GF_SECURITY_ADMIN_PASSWORD
+#     (docker-compose.prod.yml `:?` guards fail fast if any are missing)
+#
+# How to trigger:
+#   - push to `main` (auto), or Actions tab -> "deploy-vps" -> Run workflow.
+#   - concurrency group `deploy-vps` with cancel-in-progress:false so a live
+#     deploy is never killed by a second push (second run queues instead).
+#
+# Health gates (runner-side, after remote boot):
+#   - https://ct-academia.pl/api/v1/health  (nginx -> backend FastAPI)
+#   - https://ct-academia.pl/healthz        (nginx edge health)
+#   Retried ~60s to cover image build + service start_period.
+#
+# TLS / nginx scope note (NOT handled here, separate manual step):
+#   - infra/nginx/nginx.conf still ships `server_name _` placeholder with certs
+#     expected at /etc/nginx/certs (certs volume). Point DNS at the VPS, set
+#     server_name to ct-academia.pl, bootstrap once with certbot (webroot via
+#     certbot_www volume), then restart nginx. This workflow never attempts cert
+#     issuance and never blocks on missing certs beyond the health gate failing
+#     loudly (diagnostics are captured on failure).
+#
+# 4 GB VPS budget: this workflow adds NO new services — it only runs the
+# existing docker-compose.prod.yml stack (memory caps already defined there).
+name: deploy-vps
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never kill a live deploy; queue concurrent runs instead.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to VPS (ct-academia.pl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Resolves VPS_SSH_KEY / VPS_IP / VPS_USER / VPS_FOLDER from this env.
+    environment: development
+    env:
+      # Concatenation trick: works whether each value is stored as an
+      # Environment Secret or an Environment Variable (empty side = no-op).
+      VPS_IP: ${{ secrets.VPS_IP }}${{ vars.VPS_IP }}
+      VPS_USER: ${{ secrets.VPS_USER }}${{ vars.VPS_USER }}
+      VPS_FOLDER: ${{ secrets.VPS_FOLDER }}${{ vars.VPS_FOLDER }}
+    steps:
+      # Checkout is for commit-SHA visibility in logs only; the VPS updates
+      # itself via `git pull --ff-only` (never pushed to from here).
+      - name: Checkout (commit SHA for logs only)
+        uses: actions/checkout@v4
+
+      - name: Mask VPS IP in logs
+        run: |
+          if [ -n "$VPS_IP" ]; then
+            echo "::add-mask::$VPS_IP"
+          fi
+          echo "Deploying ${GITHUB_SHA} to ct-academia.pl (IP masked)."
+
+      - name: Validate environment configuration present
+        run: |
+          missing=0
+          if [ -z "$VPS_IP" ]; then echo "::error::VPS_IP not set in 'development' environment (secret or variable)."; missing=1; fi
+          if [ -z "$VPS_USER" ]; then echo "::error::VPS_USER not set in 'development' environment (secret or variable)."; missing=1; fi
+          if [ -z "$VPS_FOLDER" ]; then echo "::error::VPS_FOLDER not set in 'development' environment (secret or variable)."; missing=1; fi
+          # VPS_SSH_KEY cannot be checked via env (never exported to shell);
+          # the ssh-agent step below fails fast with a clear message if unset.
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "Environment configuration present (values not printed)."
+
+      # DESIGN: webfactory/ssh-agent (pinned v0.9.0) over appleboy/ssh-action —
+      # keeps the private key in an in-memory ssh-agent (never written to a
+      # script file), so all later steps can use stock `ssh` with explicit
+      # `-o` host-key options and run MULTIPLE remote invocations (deploy +
+      # separate failure-diagnostics). appleboy would inline key+script in one
+      # action with less control over host-key policy per invocation.
+      - name: Start ssh-agent with VPS key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      # DESIGN (host keys): TOFU via `ssh-keyscan` into ~/.ssh/known_hosts,
+      # then `StrictHostKeyChecking=yes` on every ssh call. This keeps MITM
+      # protection (never `StrictHostKeyChecking=no`). Documented alternative
+      # for a rotated host key: wipe the entry and use
+      # `-o StrictHostKeyChecking=accept-new` for one run, then return to yes.
+      - name: Trust VPS host key (ssh-keyscan, strict checking kept on)
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keyscan -H "$VPS_IP" >> ~/.ssh/known_hosts
+          echo "Known host fingerprints (type/hash only, safe to log):"
+          ssh-keygen -l -f ~/.ssh/known_hosts || true
+
+      - name: Deploy over SSH (idempotent, safe to re-run)
+        run: |
+          set -e
+          # -- %q quoting protects spaces/special chars in VPS_FOLDER.
+          # shellcheck disable=SC2087
+          ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_IP" "bash -s -- $(printf '%q' "$VPS_FOLDER") $(printf '%q' "$GITHUB_SHA")" <<'REMOTE_SCRIPT'
+            set -eu
+            VPS_FOLDER="${1:?VPS_FOLDER arg missing}"
+            DEPLOY_SHA="${2:?GITHUB_SHA arg missing}"
+            echo "[deploy] requested commit: ${DEPLOY_SHA}"
+            echo "[deploy] entering ${VPS_FOLDER}"
+            cd "$VPS_FOLDER"
+            echo "[deploy] docker versions:"
+            docker --version
+            docker compose version
+            # Never touch .env: it is untracked and `git pull --ff-only` never
+            # modifies untracked files. No `git reset --hard`, no
+            # `git checkout --force`, no `git clean` — ever.
+            if [ ! -f .env ]; then
+              echo "::error::.env missing in ${VPS_FOLDER} — create it on the VPS first (see .env.example). Refusing to deploy."
+              exit 1
+            fi
+            echo "[deploy] pulling latest (ff-only; aborts on VPS divergence):"
+            git pull --ff-only || {
+              echo "::error::git pull --ff-only failed — VPS checkout has local divergence. Resolve manually over SSH (git status/log); this workflow will NOT force-reset because .env lives alongside the repo."
+              exit 1
+            }
+            echo "[deploy] validating prod compose (fails fast if VPS .env :? guards missing):"
+            docker compose -f docker-compose.prod.yml config --quiet || {
+              echo "::error::docker compose config failed — VPS .env is missing POSTGRES_PASSWORD / DATABASE_URL / SECRET_KEY / GF_SECURITY_ADMIN_PASSWORD (see :? guards in docker-compose.prod.yml)."
+              exit 1
+            }
+            echo "[deploy] building + booting production stack:"
+            docker compose -f docker-compose.prod.yml up -d --build
+            echo "[deploy] stack status:"
+            docker compose -f docker-compose.prod.yml ps
+          REMOTE_SCRIPT
+
+      - name: Health gate (ct-academia.pl, retried ~60s)
+        run: |
+          set -e
+          ATTEMPTS=7
+          SLEEP_SECS=10
+          ok=0
+          for i in $(seq 1 "$ATTEMPTS"); do
+            echo "Health attempt $i/$ATTEMPTS ..."
+            if curl -fsS --max-time 15 https://ct-academia.pl/api/v1/health \
+              && curl -fsS --max-time 15 https://ct-academia.pl/healthz; then
+              echo "Health gate PASSED."
+              ok=1
+              break
+            fi
+            echo "Not healthy yet — sleeping ${SLEEP_SECS}s."
+            sleep "$SLEEP_SECS"
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Health gate FAILED after $ATTEMPTS attempts (https://ct-academia.pl/api/v1/health and https://ct-academia.pl/healthz). See remote diagnostics step below."
+            exit 1
+          fi
+
+      - name: Collect remote diagnostics on failure
+        if: failure()
+        run: |
+          set +e # best-effort dump; never masks the original failure
+          # shellcheck disable=SC2087
+          ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_IP" "bash -s -- $(printf '%q' "$VPS_FOLDER")" <<'REMOTE_DIAG'
+            set +e
+            cd "${1:?VPS_FOLDER arg missing}"
+            echo "===== docker compose ps ====="
+            docker compose -f docker-compose.prod.yml ps
+            echo "===== backend logs (tail 100) ====="
+            docker compose -f docker-compose.prod.yml logs --tail=100 backend || true
+            echo "===== worker logs (tail 100) ====="
+            docker compose -f docker-compose.prod.yml logs --tail=100 worker || true
+            echo "===== nginx logs (tail 100) ====="
+            docker compose -f docker-compose.prod.yml logs --tail=100 nginx || true
+            echo "===== frontend logs (tail 50) ====="
+            docker compose -f docker-compose.prod.yml logs --tail=50 frontend || true
+            echo "===== db logs (tail 50) ====="
+            docker compose -f docker-compose.prod.yml logs --tail=50 db || true
+          REMOTE_DIAG
+          exit 0

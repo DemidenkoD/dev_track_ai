@@ -4,6 +4,7 @@
 - Seeds the DataTalksClub AI Dev Tools Zoomcamp 2026 rubric from
   docs/rubrics/ai_dev_tools_zoomcamp_2026.json (12 criteria, 24 max points,
   10-point passing threshold) if the matching slug+version is absent.
+- Seeds the DevTrack AI repo itself as a default example tracked project.
 - Idempotent; never overwrites versioned rubric rows in place.
 """
 
@@ -25,6 +26,17 @@ BUILTIN_RUBRIC_PATH = (
     / "rubrics"
     / "ai_dev_tools_zoomcamp_2026.json"
 )
+
+EXAMPLE_PROJECT_URL = "https://github.com/DemidenkoD/dev_track_ai"
+EXAMPLE_DEPLOYMENT_URL = "https://ct-academia.pl"
+
+
+def _normalize_github_url(url: str) -> str:
+    """Strip whitespace, trailing slashes, and a trailing `.git` suffix."""
+    normalized = (url or "").strip().rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[: -len(".git")].rstrip("/")
+    return normalized
 
 
 def seed_builtin_rubric(db: Session) -> None:
@@ -76,6 +88,95 @@ def seed_builtin_rubric(db: Session) -> None:
     logger.info("Seeded built-in rubric %s v%s", slug, version)
 
 
+def seed_example_project(db: Session) -> None:
+    """Seed DevTrack AI itself as the default example tracked project.
+
+    Idempotent: returns without changes if a project whose normalized
+    ``github_repo_url`` already matches the example repo URL exists.
+    Mirrors the POST /api/v1/projects creation loop (draft assessment
+    milestones + one initial queued analysis run) without awarding any
+    assessment points or creating development milestones.
+    """
+    from app.models.models import (
+        AnalysisRun,
+        AssessmentMilestone,
+        Project,
+        Rubric,
+        RubricCriterion,
+    )
+    from app.schemas.enums import (
+        AnalysisStatus,
+        AnalysisTriggerType,
+        ProjectStatus,
+    )
+
+    # Ensure the built-in rubric exists before looking it up.
+    seed_builtin_rubric(db)
+    rubric = (
+        db.query(Rubric)
+        .filter(Rubric.slug == "ai-dev-tools-zoomcamp-2026")
+        .order_by(Rubric.created_at.desc())
+        .first()
+    )
+    if rubric is None:
+        logger.warning("Example project seeding skipped: built-in rubric missing")
+        return
+
+    target = _normalize_github_url(EXAMPLE_PROJECT_URL)
+    for (existing_url,) in db.query(Project.github_repo_url).all():
+        if _normalize_github_url(existing_url) == target:
+            return
+
+    criteria = (
+        db.query(RubricCriterion)
+        .filter(RubricCriterion.rubric_id == rubric.id)
+        .order_by(RubricCriterion.display_order)
+        .all()
+    )
+
+    project = Project(
+        name="DevTrack AI",
+        description="AI mentor from project idea to deployment — self-tracked example.",
+        github_repo_url=EXAMPLE_PROJECT_URL,
+        github_owner="DemidenkoD",
+        github_repo="dev_track_ai",
+        default_branch="main",
+        course_name="AI Dev Tools Zoomcamp 2026",
+        rubric_id=rubric.id,
+        status=ProjectStatus.ACTIVE,
+        weekly_hours=10,
+        diary_path=None,
+        deployment_url=EXAMPLE_DEPLOYMENT_URL,
+        daily_schedule_cron="0 6 * * *",
+        milestones_approved=False,
+    )
+    db.add(project)
+    db.flush()
+    # Draft assessment milestones from official criteria (unapproved gate).
+    for i, c in enumerate(criteria):
+        db.add(
+            AssessmentMilestone(
+                project_id=project.id,
+                rubric_criterion_id=c.id,
+                title=c.name,
+                max_points=c.max_points,
+                is_approved=False,
+                display_order=c.display_order or i,
+            )
+        )
+    # Seed an initial queued analysis run row (Track 3 worker picks it up).
+    db.add(
+        AnalysisRun(
+            project_id=project.id,
+            trigger_type=AnalysisTriggerType.INITIAL,
+            status=AnalysisStatus.QUEUED,
+            max_total_points=rubric.max_points,
+        )
+    )
+    db.commit()
+    logger.info("Seeded example project %s", EXAMPLE_PROJECT_URL)
+
+
 def init_db() -> None:
     """Create tables and seed the built-in rubric; never raises on failure."""
     try:
@@ -85,6 +186,7 @@ def init_db() -> None:
         db = SessionLocal()
         try:
             seed_builtin_rubric(db)
+            seed_example_project(db)
         finally:
             db.close()
     except Exception as exc:  # startup must not crash if Postgres is down

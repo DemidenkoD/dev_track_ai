@@ -106,3 +106,4 @@ class TestObservabilityCorrelationAndAlerts:
             "TargetDeploymentDown",
         ):
             assert f"alert: {alert_name}" in content
+

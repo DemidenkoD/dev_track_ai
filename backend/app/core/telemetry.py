@@ -236,3 +236,4 @@ def instrument_app(app: FastAPI) -> None:
             content="\n".join(lines) + "\n",
             media_type=CONTENT_TYPE_LATEST,
         )
+
