@@ -1,6 +1,6 @@
 """Structured Pydantic output schemas for DevTrack AI's specialized Gemini agents."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.enums import (
     EvidenceType,
@@ -54,6 +54,28 @@ class CriterionScoreProposal(BaseModel):
         default=None, description="Specific gap preventing the next scoring level"
     )
     cited_evidence_paths: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _enforce_score_state_guards(self) -> "CriterionScoreProposal":
+        """Score-state grounding guards (Track 2 rubric-evaluation skill).
+
+        - ``verified`` requires non-empty evidence (no guessing).
+        - ``needs_review`` requires low confidence (< 0.70); high confidence
+          with missing/ambiguous evidence must be ``estimated`` or lower it.
+        """
+        if self.score_state == ScoreState.VERIFIED and not self.cited_evidence_paths:
+            raise ValueError(
+                f"score_state='verified' forbidden with empty cited_evidence_paths "
+                f"for criterion `{self.criterion_code}`; use 'estimated' or "
+                f"'needs_review' with concrete evidence paths."
+            )
+        if self.score_state == ScoreState.NEEDS_REVIEW and self.ai_confidence >= 0.70:
+            raise ValueError(
+                f"score_state='needs_review' forbidden with ai_confidence>=0.70 "
+                f"({self.ai_confidence}) for criterion `{self.criterion_code}`; "
+                f"cap confidence below 0.70 when evidence is missing/ambiguous."
+            )
+        return self
 
 
 class ScorecardEvaluationOutput(BaseModel):

@@ -1,25 +1,25 @@
 """Service-layer Protocol interfaces so Track 1 endpoints compile and boot
 without Track 2 (AI agents) / Track 3 (worker, scanners, monitors).
 
-Track 2/3 will provide concrete implementations and wire them here via
-FastAPI dependency overrides. Until then, endpoints use deterministic
-DB-backed behaviour or explicit stubs — never raw httpx/LLM calls.
+Contract:
+- Endpoints depend ONLY on the `get_*` getters below via
+  `fastapi.Depends` (the Protocol type is the prod path). Track 2/3 wire
+  real implementations through `app.dependency_overrides[get_*]`.
+- The `Stub*` classes are TEST-ONLY doubles (plus a degraded-safe
+  fallback when no override is registered). No endpoint imports a `Stub*`
+  directly — they resolve through the getter so overrides are honored.
+- Endpoints perform no raw httpx/LLM calls; SSRF + secrets handling live
+  in Track 2/3 implementations.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
-from uuid import UUID
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class DeploymentMonitorProtocol(Protocol):
-    """Track 3: SSRF-protected httpx health check (see backend/AGENTS.md §2.3).
-
-    TODO(Track 3): implement in backend/app/services/deployment_monitor.py
-    with socket.getaddrinfo IP validation + redirect re-validation, then
-    override `get_deployment_monitor` in deployments endpoints.
-    """
+    """Track 3: SSRF-protected httpx health check (see backend/AGENTS.md §2.3)."""
 
     def check(self, target_url: str) -> dict:
         """Return {is_reachable, http_status_code, https_valid,
@@ -28,7 +28,7 @@ class DeploymentMonitorProtocol(Protocol):
 
 
 class StubDeploymentMonitor:
-    """Deterministic placeholder: records that no live check ran yet."""
+    """TEST-ONLY double: records that no live check ran yet."""
 
     def check(self, target_url: str) -> dict:
         return {
@@ -44,29 +44,60 @@ class StubDeploymentMonitor:
 
 
 def get_deployment_monitor() -> DeploymentMonitorProtocol:
-    return StubDeploymentMonitor()
+    """Resolve the deployment monitor (override point for Track 3).
+
+    Prefers the real Track 3 `DeploymentMonitor` when importable;
+    otherwise returns the test-only stub so the contract route still
+    responds with a degraded-safe row instead of 500.
+    """
+    try:
+        from app.services.deployment_monitor import DeploymentMonitor
+
+        return DeploymentMonitor()
+    except Exception:
+        return StubDeploymentMonitor()
 
 
 @runtime_checkable
 class RubricAnalystProtocol(Protocol):
-    """Track 2: rubric extraction/evaluation via Gemini structured outputs.
+    """Track 2: rubric extraction/evaluation via Gemini structured outputs."""
 
-    TODO(Track 2): implement in backend/app/agents/rubric_analyst.py and
-    backend/app/services/rubric_service.py, then override
-    `get_rubric_analyst` in the rubrics ingest endpoint.
-    """
-
-    def extract_rubric(self, raw_content: str | None, source_url: str | None) -> dict:
+    def extract_rubric(
+        self, raw_content: str | None, source_url: str | None
+    ) -> dict[str, Any]:
         ...
+
+
+class StubRubricAnalyst:
+    """TEST-ONLY double: extraction not wired yet (Track 2 TODO)."""
+
+    def extract_rubric(
+        self, raw_content: str | None, source_url: str | None
+    ) -> dict[str, Any]:
+        return {
+            "criteria": [],
+            "note": "rubric_analyst not wired yet (Track 2 TODO)",
+        }
+
+
+def get_rubric_analyst() -> RubricAnalystProtocol:
+    """Resolve the rubric analyst (override point for Track 2)."""
+    try:
+        from app.agents.rubric_analyst import RubricAnalyst  # type: ignore
+
+        return RubricAnalyst()
+    except Exception:
+        try:
+            from app.services.rubric_service import RubricAnalyst  # type: ignore
+
+            return RubricAnalyst()
+        except Exception:
+            return StubRubricAnalyst()
 
 
 @runtime_checkable
 class OnCallAgentProtocol(Protocol):
-    """Track 2 (Phase 4): bounded read-only on-call diagnosis.
-
-    TODO(Track 2): implement in backend/app/agents/oncall_agent.py, then
-    override `get_oncall_agent` in the oncall endpoint.
-    """
+    """Track 2 (Phase 4): bounded read-only on-call diagnosis."""
 
     def diagnose(
         self, alert_name: str, time_window_minutes: int, context_notes: str | None
@@ -74,6 +105,38 @@ class OnCallAgentProtocol(Protocol):
         ...
 
 
-def latest_analysis_run_id_placeholder(project_id: UUID) -> None:
-    """Reserved helper hook for the Track 3 analysis pipeline wiring."""
-    return None
+class StubOnCallAgent:
+    """TEST-ONLY double: deterministic read-only placeholder diagnosis."""
+
+    def diagnose(
+        self, alert_name: str, time_window_minutes: int, context_notes: str | None
+    ) -> dict:
+        return {
+            "incident_summary": (
+                f"Received alert '{alert_name}' "
+                f"(window: last {time_window_minutes} minutes). "
+                "Automated read-only triage is not wired yet (Track 2 TODO)."
+            ),
+            "root_cause_hypothesis": (
+                "No telemetry inspected yet — on-call agent stub. Context notes: "
+                f"{context_notes or 'none provided'}."
+            ),
+            "confidence": 0.0,
+            "evidence_citations": [],
+            "recommended_actions": [
+                "Wire the bounded read-only on-call agent (Track 2) for this alert.",
+                "Check worker analysis job status and DB pool metrics manually.",
+                "Consider raising ANALYSIS_TIMEOUT_SECONDS or enforcing shallow clones.",
+            ],
+            "read_only_verified": True,
+        }
+
+
+def get_oncall_agent() -> OnCallAgentProtocol:
+    """Resolve the on-call agent (override point for Track 2, Phase 4)."""
+    try:
+        from app.agents.oncall_agent import OnCallAgent  # type: ignore
+
+        return OnCallAgent()
+    except Exception:
+        return StubOnCallAgent()

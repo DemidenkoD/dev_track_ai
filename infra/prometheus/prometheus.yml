@@ -10,24 +10,34 @@ rule_files:
   - /etc/prometheus/alert_rules.yml
 
 scrape_configs:
+  # Self-scrape: Prometheus's own /metrics (always available, no app hook needed).
   - job_name: "prometheus"
     static_configs:
       - targets: ["localhost:9090"]
 
-  # FastAPI backend exposes Prometheus metrics on :8000 (Track 1 wires
-  # prometheus_client; path /metrics). Adjust the metrics path if Track 1
-  # chooses a different exposition route.
+  # FastAPI backend exposes Prometheus metrics on :8000 (path /metrics).
+  # REQUIRES Track 1 hook: wire prometheus_client into backend/app
+  # (expose GET /metrics). Until Track 1 lands it, this target reports
+  # up==0 and TargetDeploymentDown stays pending — that is expected, not a
+  # Track 6 misconfiguration. See alert_rules.yml.
   - job_name: "backend"
     static_configs:
       - targets: ["backend:8000"]
     metrics_path: /metrics
 
-  # Worker shares the backend image; if Track 3 adds a worker metrics port,
-  # add it here. Until then the worker is observed via backend + pg metrics.
-  - job_name: "worker"
-    static_configs:
-      - targets: ["worker:8000"]
-    metrics_path: /metrics
+  # Worker metrics (Track 3 TODO): the worker container exposes NO :8000
+  # listener, so there is deliberately NO worker:8000 job here — scraping it
+  # would pin up{job="worker"}==0 and generate permanent alert noise.
+  # When Track 3 adds a dedicated worker metrics port (e.g. call
+  # prometheus_client.start_http_server(8001) in app.worker.runner and
+  # publish 8001 on the `app` network), re-enable:
+  # - job_name: "worker"
+  #   static_configs:
+  #     - targets: ["worker:8001"]
+  #   metrics_path: /metrics
+  # Until then the worker is observed via backend metrics, Loki
+  # {app="worker"} logs, and the analysis_runs_failed_total counter (once
+  # Track 3 exposes it) used by AnalysisWorkerJobFailures.
 
   # Postgres exporter is optional (uncomment when postgres_exporter is added):
   # - job_name: "postgres"

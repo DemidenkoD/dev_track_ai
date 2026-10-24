@@ -1,5 +1,7 @@
 # DevTrack AI — Product Specification v0.3
 
+> **Tracker (public):** https://github.com/users/DemidenkoD/projects/4/views/1 — tasks with acceptance criteria + `Closes #n` evidence.
+
 **Tagline:** Your AI mentor from project idea to deployment.
 
 **Product positioning:** Course-first AI project mentor, initially targeting DataTalksClub Zoomcamp participants.

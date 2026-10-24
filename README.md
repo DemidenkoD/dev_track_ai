@@ -23,6 +23,9 @@ Per Product Specification §3, DevTrack AI uses a single predefined account (no 
 
 ## Repository & Multi-Agent Architecture
 
+> **Spec:** [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) v0.3
+> **Tracker (public):** https://github.com/users/DemidenkoD/projects/4/views/1 — tasks with acceptance criteria + `Closes #n` evidence.
+
 This repository is structured for **simultaneous multi-agent development** across 6 non-overlapping ownership tracks:
 
 - **Problem Statement:** [docs/PROBLEM_DESCRIPTION.md](docs/PROBLEM_DESCRIPTION.md)

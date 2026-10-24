@@ -64,10 +64,11 @@ class EvidenceType(StrEnum):
 
 
 class SecurityStatus(StrEnum):
+    """Overall security posture (DATABASE_SCHEMA §3.10: pass/warning/critical only)."""
+
     PASS = "pass"
     WARNING = "warning"
     CRITICAL = "critical"
-    UNKNOWN = "unknown"
 
 
 class SeverityLevel(StrEnum):

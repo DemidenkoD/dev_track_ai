@@ -8,6 +8,13 @@
   "is_official": true,
   "max_points": 24,
   "passing_threshold": 10,
+  "version_history": [
+    {
+      "version": "2026.1.0",
+      "retrieved_at": "2026-10-24T00:00:00Z",
+      "note": "Initial frozen 12-criterion / 24-point official rubric (10 to pass). Immutable: updates create a new versioned row via rubric_service.resolve_immutable_version (patch bump, e.g. 2026.1.0 -> 2026.1.1); existing DB seed rows are never mutated."
+    }
+  ],
   "criteria": [
     {
       "code": "problem_description",

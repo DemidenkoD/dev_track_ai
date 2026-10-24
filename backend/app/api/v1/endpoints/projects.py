@@ -79,7 +79,7 @@ def _project_to_summary(db: Session, p: Project) -> ProjectSummarySchema:
         milestones_approved=p.milestones_approved,
         last_analysis_at=p.last_analysis_at,
         last_commit_sha=run.commit_sha if run else None,
-        security_status=sec.overall_status if sec else SecurityStatus.UNKNOWN,
+        security_status=sec.overall_status if sec else SecurityStatus.WARNING,
         deployment_reachable=dep.is_reachable if dep else None,
         expected_score=expected,
         development_progress=progress,

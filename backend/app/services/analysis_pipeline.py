@@ -220,6 +220,8 @@ def run_analysis_stages(
         logger.warning("Analysis inspection stage failed (%s).", type(exc).__name__)
 
     # Deployment check runs regardless of clone outcome (URL may be manual).
+    # Deduplicate: _inspect_checkout already records the manual-override
+    # deployment evidence, so skip adding a second entry for the same URL.
     try:
         target: str | None = deployment_override
         source = "manual"
@@ -231,16 +233,21 @@ def run_analysis_stages(
             except Exception:
                 target = None
         if target:
+            already_recorded = any(
+                e.evidence_type == "deployment_url" and e.path_or_url == target
+                for e in evidence
+            )
             health = check_deployment_health(target)
             deployment = {"target_url": target, "discovery_source": source, **health.to_dict()}
-            evidence.append(
-                PipelineEvidence(
-                    evidence_type="deployment_url",
-                    title=f"Deployment check: {target}",
-                    path_or_url=target,
-                    metadata={"http_status": health.http_status_code},
+            if not already_recorded:
+                evidence.append(
+                    PipelineEvidence(
+                        evidence_type="deployment_url",
+                        title=f"Deployment check: {target}",
+                        path_or_url=target,
+                        metadata={"http_status": health.http_status_code},
+                    )
                 )
-            )
     except Exception as exc:
         logger.warning("Deployment stage failed (%s).", type(exc).__name__)
 
@@ -328,6 +335,11 @@ def _inspect_checkout(
                     )
                 )
     # Deployment discovery from checkout (manual override wins inside helper).
+    # When a manual deployment_override is set, the caller (run_analysis_stages)
+    # records the single manual-override evidence entry — skip checkout
+    # discovery here to avoid a duplicate second entry.
+    if deployment_override and deployment_override.strip():
+        return
     try:
         url, source = discover_deployment_url(checkout, manual_override=deployment_override)
         if url:

@@ -252,14 +252,23 @@ def process_single_run(
         logger.warning("Analysis run failed (%s).", type(exc).__name__)
         ok = False
     # Ephemeral notification: purged on success AND failure; never logged.
+    # Missing entry (no address queued via queue_notification) is a safe no-op.
     try:
         body = (
             f"Your DevTrack AI analysis finished with status "
             f"{'completed' if ok else 'failed'}."
         )
-        send_and_purge(run_id, notify_subject, body, registry=EPHEMERAL_NOTIFICATIONS)
-    except Exception:
-        pass
+        notified = send_and_purge(run_id, notify_subject, body, registry=EPHEMERAL_NOTIFICATIONS)
+        if notified:
+            logger.info("Ephemeral notification dispatched for run %s.", run_id)
+        else:
+            # No-op: nothing was queued — log only the run id, never an address.
+            logger.info("No ephemeral notification queued for run %s.", run_id)
+    except Exception as exc:
+        # Never log the address; run id only.
+        logger.warning(
+            "Ephemeral notification error (%s) for run %s.", type(exc).__name__, run_id
+        )
     _ = notify_subject  # subject is caller-configurable only
     return ok
 

@@ -12,14 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-try:
-    from app.agents.base import ADVISORY_NOTICE, run_with_fallback
-except ImportError:  # harness imports as backend.app.*: fix sys.path first
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-    from app.agents.base import ADVISORY_NOTICE, run_with_fallback
+from app.agents.base import ADVISORY_NOTICE, run_with_fallback
 
 from app.schemas.agent_outputs import (
     MentorEvaluationOutput,
@@ -60,6 +53,51 @@ def _summarize_block(title: str, payload: Any, limit: int = 1500) -> str:
     return f"{title}:\n{text}"
 
 
+def _collect_scorecard_paths(scorecard: Any) -> list[str]:
+    """Collect cited evidence paths from a scorecard for propagation."""
+    paths: list[str] = []
+    try:
+        evals: Sequence[Any] = []
+        if scorecard is None:
+            return paths
+        if hasattr(scorecard, "criteria_evaluations"):
+            evals = scorecard.criteria_evaluations or []
+        elif isinstance(scorecard, dict):
+            evals = scorecard.get("criteria_evaluations", []) or []
+        for ev in evals:
+            if isinstance(ev, dict):
+                for p in ev.get("cited_evidence_paths", []) or []:
+                    if p and p not in paths:
+                        paths.append(str(p))
+            else:
+                for p in getattr(ev, "cited_evidence_paths", []) or []:
+                    if p and p not in paths:
+                        paths.append(str(p))
+    except Exception:
+        pass
+    return paths
+
+
+def _collect_evidence_paths(
+    scorecard: Any = None, evidence_items: Sequence[Any] | None = None
+) -> list[str]:
+    """Merge scorecard citations + raw evidence bundle paths (deduped)."""
+    merged: list[str] = []
+    for p in _collect_scorecard_paths(scorecard):
+        if p not in merged:
+            merged.append(p)
+    for ev in evidence_items or []:
+        if isinstance(ev, str):
+            cand = ev.strip()
+        elif isinstance(ev, dict):
+            cand = str(ev.get("path_or_url") or "").strip()
+        else:
+            cand = str(getattr(ev, "path_or_url", "") or "").strip()
+        if cand and cand not in merged and cand != "?":
+            merged.append(cand)
+    return merged
+
+
 def fallback_mentor_evaluation(
     scorecard: Any = None,
     progress: Any = None,
@@ -69,12 +107,14 @@ def fallback_mentor_evaluation(
     previous_commit_sha: str | None = None,
     current_commit_sha: str | None = None,
     error: Exception | None = None,  # noqa: ARG001
+    evidence_items: Sequence[Any] | None = None,
 ) -> MentorEvaluationOutput:
     """Deterministic synthesis: generic high-ROI tasks, conservative flags."""
     same_sha = bool(
         previous_commit_sha and current_commit_sha
         and previous_commit_sha == current_commit_sha
     )
+    evidence_paths = _collect_evidence_paths(scorecard, evidence_items)
     # Extract lowest-confidence / unverified criteria if a scorecard is present.
     recs: list[RecommendationItem] = []
     try:
@@ -106,7 +146,7 @@ def fallback_mentor_evaluation(
                     priority=PriorityLevel.HIGH if delta > 0 else PriorityLevel.LOW,
                     estimated_effort_hours=3.0,
                     technical_risk=RiskLevel.LOW,
-                    supporting_evidence_paths=[],
+                    supporting_evidence_paths=evidence_paths[:5],
                 )
             )
     except Exception:
@@ -125,7 +165,7 @@ def fallback_mentor_evaluation(
                 priority=PriorityLevel.MEDIUM,
                 estimated_effort_hours=4.0,
                 technical_risk=RiskLevel.LOW,
-                supporting_evidence_paths=[],
+                supporting_evidence_paths=evidence_paths[:5],
             )
         ]
     summary = (
@@ -145,6 +185,21 @@ def fallback_mentor_evaluation(
     )
 
 
+def _parse_mentor(
+    raw: dict[str, Any],
+    scorecard: Any = None,
+    evidence_items: Sequence[Any] | None = None,
+) -> MentorEvaluationOutput:
+    """Validate live output, then backfill empty evidence citations."""
+    output = MentorEvaluationOutput.model_validate(raw)
+    fallback_paths = _collect_evidence_paths(scorecard, evidence_items)
+    if fallback_paths:
+        for rec in output.recommendations:
+            if not rec.supporting_evidence_paths:
+                rec.supporting_evidence_paths = fallback_paths[:5]
+    return output
+
+
 def evaluate_project(
     scorecard: Any = None,
     progress: Any = None,
@@ -154,8 +209,12 @@ def evaluate_project(
     previous_commit_sha: str | None = None,
     current_commit_sha: str | None = None,
     project_name: str = "",
+    evidence_items: Sequence[Any] | None = None,
+    evidence_bundle: Sequence[Any] | None = None,
 ) -> MentorEvaluationOutput:
     """Synthesize all specialist signals into mentor guidance."""
+    if evidence_items is None and evidence_bundle is not None:
+        evidence_items = evidence_bundle
 
     def _prompt() -> tuple[str, str]:
         user = (
@@ -175,9 +234,9 @@ def evaluate_project(
     return run_with_fallback(
         prompt_builder=_prompt,
         response_schema=MentorEvaluationOutput,
-        parse=lambda raw: MentorEvaluationOutput.model_validate(raw),
+        parse=lambda raw: _parse_mentor(raw, scorecard, evidence_items),
         fallback=lambda exc: fallback_mentor_evaluation(
             scorecard, progress, diary, security, deployment_status,
-            previous_commit_sha, current_commit_sha, exc,
+            previous_commit_sha, current_commit_sha, exc, evidence_items,
         ),
     )

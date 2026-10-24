@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import type { ProjectSummary } from '../types/api';
-import { DeploymentBadge, ScoreStateBadge, SecurityBadge } from './badges';
+import { DeploymentBadge, SecurityBadge } from './badges';
 
 function shortSha(sha?: string | null): string {
   if (!sha) return '—';
@@ -81,8 +81,9 @@ export function ProjectCard({ project }: { project: ProjectSummary }): JSX.Eleme
       </footer>
 
       <p className="muted small advisory-inline">
-        AI estimates are advisory and never represent an official course grade.{' '}
-        <ScoreStateBadge state={score.verified_points > 0 ? 'verified' : 'estimated'} />
+        AI estimates are advisory and never represent an official course grade. Aggregate of 12
+        criteria — individual states vary; see the Scorecard for per-criterion
+        Estimated&nbsp;/&nbsp;Verified&nbsp;/&nbsp;Needs&nbsp;Review badges.
       </p>
     </article>
   );

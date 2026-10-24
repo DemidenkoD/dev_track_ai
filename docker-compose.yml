@@ -4,6 +4,20 @@
 #           + frontend (:5173 -> :80) + prometheus/loki/tempo/grafana.
 # Env is read from .env (template: .env.example); sane defaults below keep
 # `docker compose config` green even without a .env file.
+#
+# TELEMETRY SHIPPER GAP (Track 1 / Track 3 must close — Track 6 never edits app code):
+# - OTEL traces: OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317 is set on
+#   backend/worker, but NO spans flow until Track 1 wires the
+#   opentelemetry-sdk OTLP exporter into backend/app (FastAPI instrumentor +
+#   exporters) and Track 3 does the same in app.worker.runner.
+#   Required Track 1 hook: GET /metrics via prometheus_client (scraped as
+#   job "backend", see infra/prometheus/prometheus.yml).
+# - Loki logs: containers log to stdout (use `docker logs` / `make logs`).
+#   To ship logs to Loki, install the loki docker plugin on the host and
+#   uncomment the `logging:` stanzas on backend/worker below
+#   (labels {app="backend"} / {app="worker"}). They stay commented because
+#   the plugin is absent on a fresh checkout — uncommenting would break `make up`.
+# - Telemetry MUST NOT contain emails, JWTs, or API keys (infra/AGENTS.md).
 name: devtrack-ai
 
 services:
@@ -33,6 +47,15 @@ services:
     container_name: devtrack-backend
     restart: unless-stopped
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # Loki log shipping (OPT-IN): requires the loki docker plugin on the host:
+    #   docker plugin install grafana/loki-docker-driver:latest --alias loki --grant-all-permissions
+    # Then uncomment to ship with {app="backend"} labels:
+    # logging:
+    #   driver: loki
+    #   options:
+    #     loki-url: "http://localhost:3100/loki/api/v1/push"
+    #     loki-external-labels: "app=backend,env=local"
+    #     keep-file: "true"
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://devtrack:devtrack_secret@db:5432/devtrack_ai}
@@ -66,6 +89,24 @@ services:
     restart: unless-stopped
     # PostgreSQL-backed job runner sharing the backend image (Track 3 entry).
     command: ["python", "-m", "app.worker.runner"]
+    # Loki log shipping (OPT-IN, same plugin prerequisite as backend):
+    # uncomment to ship with {app="worker"} labels.
+    # logging:
+    #   driver: loki
+    #   options:
+    #     loki-url: "http://localhost:3100/loki/api/v1/push"
+    #     loki-external-labels: "app=worker,env=local"
+    #     keep-file: "true"
+    healthcheck:
+      # No pg_isready/curl in the slim backend image: DB reachability via a
+      # stdlib TCP dial to db:5432 + worker-process liveness via PID 1
+      # cmdline (must be the Track 3 runner). If Track 3 renames the runner
+      # module, update the 'runner' assertion below.
+      test: ["CMD-SHELL", "python -c \"import socket,pathlib; socket.create_connection(('db',5432),timeout=5).close(); cmd=pathlib.Path('/proc/1/cmdline').read_bytes().decode(); assert 'runner' in cmd, cmd\""]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     deploy:
       resources:
         limits:
@@ -99,9 +140,16 @@ services:
     # Host :5173 -> container :80 (documented mapping; vite default port).
     ports:
       - "5173:80"
+    healthcheck:
+      # nginx:alpine ships busybox wget (no curl needed).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
     networks: [app]
 
   prometheus:
@@ -118,6 +166,12 @@ services:
       - prom_data:/prometheus
     ports:
       - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks: [app]
 
   loki:
@@ -130,6 +184,12 @@ services:
       - loki_data:/loki
     ports:
       - "3100:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks: [app]
 
   tempo:
@@ -144,6 +204,12 @@ services:
       - "3200:3200"   # Tempo query / Grafana datasource
       - "4317:4317"   # OTLP gRPC  (OTEL_EXPORTER_OTLP_ENDPOINT)
       - "4318:4318"   # OTLP HTTP
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3200/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks: [app]
 
   grafana:
@@ -157,13 +223,26 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # Dashboard JSONs mount to /var/lib/grafana/dashboards (NOT to
+      # /etc/grafana/provisioning/dashboards — that would shadow the
+      # dashboards.yml provider config). Must match `path:` in
+      # infra/grafana/provisioning/dashboards/dashboards.yml.
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
-      - prometheus
-      - loki
-      - tempo
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
     networks: [app]
 
 volumes:

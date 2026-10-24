@@ -187,6 +187,8 @@ def run_pip_audit(target_dir: str | Path) -> tuple[bool, list[NormalizedFinding]
     """Run pip-audit against requirements files (no dependency install)."""
     cwd = Path(target_dir)
     req_files = [p for p in ("requirements.txt", "requirements-dev.txt", "requirements.lock") if (cwd / p).is_file()]
+    # Bare pyproject.toml case: no --requirement flag — pip-audit auto-discovers
+    # pyproject.toml in cwd. Only requirements*.txt files need --requirement.
     targets = req_files or (["pyproject.toml"] if (cwd / "pyproject.toml").is_file() else [])
     if not targets:
         return False, []  # nothing auditable -> record as skipped by caller
@@ -249,7 +251,16 @@ def run_npm_audit(target_dir: str | Path) -> tuple[bool, list[NormalizedFinding]
                     message=redact_secrets(f"{adv.get('title', '')}: {adv.get('overview', '')}"[:1000]),
                 )
             )
-    for vuln in (payload.get("vulnerabilities", []) if isinstance(payload, dict) else []):
+    # npm v7+: ``vulnerabilities`` is a dict keyed by package name;
+    # legacy formats may emit a list. Handle both.
+    raw_vulns = payload.get("vulnerabilities", []) if isinstance(payload, dict) else []
+    if isinstance(raw_vulns, dict):
+        vuln_items: list = list(raw_vulns.values())
+    elif isinstance(raw_vulns, list):
+        vuln_items = raw_vulns
+    else:
+        vuln_items = []
+    for vuln in vuln_items:
         if isinstance(vuln, dict):
             findings.append(
                 NormalizedFinding(
@@ -258,7 +269,17 @@ def run_npm_audit(target_dir: str | Path) -> tuple[bool, list[NormalizedFinding]
                     severity=_normalize_severity(vuln.get("severity")),
                     file_path=str(vuln.get("name")) or None,
                     line_number=None,
-                    message=redact_secrets(str(vuln.get("description", ""))[:1000]),
+                    message=redact_secrets(str(vuln.get("description", vuln.get("title", "")))[:1000]),
+                )
+            )
+        elif isinstance(vuln, str):
+            # Some npm versions emit bare spec strings inside `via`.
+            findings.append(
+                NormalizedFinding(
+                    scanner="npm-audit",
+                    rule_id=vuln[:120],
+                    severity="info",
+                    message=redact_secrets(vuln[:1000]),
                 )
             )
     return True, findings

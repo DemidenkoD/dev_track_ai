@@ -22,24 +22,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
-from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger(__name__)
 
-# Ensure the `backend/` directory (parent of the `app/` package) is on
-# sys.path so `from app.schemas...` works whether this module is imported as
-# `app.agents.base` (PYTHONPATH=backend, canonical) or as
-# `backend.app.agents.base` (PYTHONPATH=repo root, harness-style).
-_BACKEND_DIR = str(Path(__file__).resolve().parents[2])
-if _BACKEND_DIR not in sys.path:
-    sys.path.insert(0, _BACKEND_DIR)
-
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
-# Import path compat: repo code uses `from app.schemas...` with `backend/`
-# on sys.path, while some harnesses import `backend.app...`.
+# Canonical import: `backend/` is on PYTHONPATH (see backend/tests/conftest.py).
+# Track 1 settings are optional — agents work offline without them.
 try:  # pragma: no cover - import alias resolution
     from app.core.config import settings as _app_settings  # type: ignore
 except Exception:  # Track 1 core may not exist yet (greenfield)

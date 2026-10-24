@@ -1,13 +1,15 @@
-"""POST /api/v1/oncall/diagnose — bounded read-only on-call stub (Phase 4).
+"""POST /api/v1/oncall/diagnose — bounded read-only on-call endpoint (Phase 4).
 
-Track 1 returns a deterministic, explicitly read-only placeholder shaped as
-OnCallDiagnosisResponse. Track 2 wires the real OnCallAgentProtocol
-implementation (Prometheus/Loki/Tempo, read-only) via dependency override.
+Resolves the agent through `Depends(get_oncall_agent)` (Protocol only —
+never a Stub import): Track 2 overrides the getter with the real
+read-only Prometheus/Loki/Tempo agent, while the default resolves to a
+deterministic placeholder shaped as OnCallDiagnosisResponse.
 No remediation is ever executed here — only proposed as text.
 """
 
 from fastapi import APIRouter, Depends
 
+from app.api.protocols import OnCallAgentProtocol, get_oncall_agent
 from app.core.deps import get_current_user
 from app.schemas.api_contracts import (
     OnCallDiagnoseRequest,
@@ -22,25 +24,12 @@ router = APIRouter(tags=["oncall"])
 def diagnose(
     body: OnCallDiagnoseRequest,
     _user: UserProfileSchema = Depends(get_current_user),
+    agent: OnCallAgentProtocol = Depends(get_oncall_agent),
 ) -> OnCallDiagnosisResponse:
-    # TODO(Track 2): override with OnCallAgentProtocol.diagnose() backed by
-    # read-only Prometheus/Loki/Tempo queries (see on-call-diagnostics skill).
-    return OnCallDiagnosisResponse(
-        incident_summary=(
-            f"Received alert '{body.alert_name}' "
-            f"(window: last {body.time_window_minutes} minutes). "
-            "Automated read-only triage is not wired yet (Track 2 TODO)."
-        ),
-        root_cause_hypothesis=(
-            "No telemetry inspected yet — on-call agent stub. Context notes: "
-            f"{body.context_notes or 'none provided'}."
-        ),
-        confidence=0.0,
-        evidence_citations=[],
-        recommended_actions=[
-            "Wire the bounded read-only on-call agent (Track 2) for this alert.",
-            "Check worker analysis job status and DB pool metrics manually.",
-            "Consider raising ANALYSIS_TIMEOUT_SECONDS or enforcing shallow clones.",
-        ],
-        read_only_verified=True,
+    # Track 2 wires the real OnCallAgentProtocol.diagnose() backed by
+    # read-only Prometheus/Loki/Tempo queries (see on-call-diagnostics skill)
+    # via app.dependency_overrides[get_oncall_agent].
+    result = agent.diagnose(
+        body.alert_name, body.time_window_minutes, body.context_notes
     )
+    return OnCallDiagnosisResponse(**result)

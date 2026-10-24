@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.helpers import get_project_or_404, latest_run
-from app.api.protocols import get_deployment_monitor
+from app.api.protocols import DeploymentMonitorProtocol, get_deployment_monitor
 from app.core.deps import get_current_user, get_db
 from app.models.models import (
     DeploymentCheck,
@@ -195,6 +195,7 @@ def trigger_deployment_check(
     body: DeploymentCheckTriggerRequest,
     db: Session = Depends(get_db),
     _user: UserProfileSchema = Depends(get_current_user),
+    monitor: DeploymentMonitorProtocol = Depends(get_deployment_monitor),
 ) -> DeploymentCheckSchema:
     project = get_project_or_404(db, project_id)
     target = body.target_url or project.deployment_url
@@ -204,9 +205,9 @@ def trigger_deployment_check(
             detail="No deployment URL: set project deployment_url or pass target_url",
         )
     # SSRF note: no raw httpx here. Delegates to the monitor interface whose
-    # Track 3 implementation validates resolved IPs + redirects. The stub
+    # Track 3 implementation validates resolved IPs + redirects. Resolved via
+    # Depends(get_deployment_monitor) so tests/prod can override; the default
     # records a row without performing any network request.
-    monitor = get_deployment_monitor()
     result = monitor.check(target)
     run = latest_run(db, project.id)
     check = DeploymentCheck(

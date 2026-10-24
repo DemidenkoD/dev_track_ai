@@ -1,11 +1,13 @@
 """Analysis run endpoints + ephemeral one-time notification handling.
 
 PRIVACY INVARIANT: `notify_email_once` is NEVER written to PostgreSQL,
-never logged, and never placed in tracing spans. It is held strictly in the
-volatile in-memory `EPHEMERAL_NOTIFICATIONS` map keyed by analysis_run_id
-(the API-side holding map; Track 3's notification_service owns dispatch and
-pops the entry immediately upon send/fail). If an email is supplied without
-`acknowledge_ephemeral_email=True`, the request is rejected (400).
+never logged, and never placed in tracing spans. It is staged strictly via
+Track 3's `notification_service.queue_notification()` into the volatile
+in-memory `EPHEMERAL_NOTIFICATIONS` registry keyed by analysis_run_id and
+popped by the dispatcher immediately upon send/fail. If an email is supplied
+without `acknowledge_ephemeral_email=True`, the request is rejected (400).
+This module holds NO local email map (single source of truth lives in the
+notification service) and re-exports it only so the worker shares one map.
 """
 
 from uuid import UUID
@@ -21,12 +23,16 @@ from app.schemas.api_contracts import (
     TriggerAnalysisRequest,
     UserProfileSchema,
 )
+from app.services.notification_service import (
+    EPHEMERAL_NOTIFICATIONS,
+    queue_notification,
+)
 
 router = APIRouter(tags=["analyses"])
 
-# Volatile RAM only: analysis_run_id (str) -> one-time recipient email.
-# Never persisted, never logged. Popped by the dispatcher after send/fail.
-EPHEMERAL_NOTIFICATIONS: dict[str, str] = {}
+# Re-exported for the Track 3 worker: single shared volatile registry.
+# (No address is ever logged, traced, or persisted here.)
+__all__ = ["router", "EPHEMERAL_NOTIFICATIONS"]
 
 
 def _to_schema(run: AnalysisRun, notified: bool = False) -> AnalysisRunSchema:
@@ -86,11 +92,21 @@ def trigger_analysis(
     db.add(run)
     db.commit()
     db.refresh(run)
-    # Hold the address in volatile memory only (never in the row, never logged).
+    # Stage the address in volatile memory only (never in the row, never logged).
+    # queue_notification() validates + stores it in the shared registry.
     notified = False
     if body.notify_email_once is not None:
-        EPHEMERAL_NOTIFICATIONS[str(run.id)] = str(body.notify_email_once)
-        notified = True
+        try:
+            notified = queue_notification(
+                run.id,
+                str(body.notify_email_once),
+                acknowledged=body.acknowledge_ephemeral_email,
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="acknowledge_ephemeral_email must be true when notify_email_once is provided",
+            )
     return _to_schema(run, notified=notified)
 
 
@@ -110,7 +126,7 @@ def list_analyses(
         .all()
     )
     return [
-        _to_schema(r, notified=str(r.id) in EPHEMERAL_NOTIFICATIONS) for r in runs
+        _to_schema(r, notified=EPHEMERAL_NOTIFICATIONS.has(r.id)) for r in runs
     ]
 
 
@@ -128,4 +144,4 @@ def get_analysis(
     run = db.get(AnalysisRun, analysis_run_id)
     if run is None or run.project_id != project.id:
         raise HTTPException(status_code=404, detail="Analysis run not found")
-    return _to_schema(run, notified=str(run.id) in EPHEMERAL_NOTIFICATIONS)
+    return _to_schema(run, notified=EPHEMERAL_NOTIFICATIONS.has(run.id))

@@ -592,3 +592,88 @@ a:focus-visible {
   border-radius: 999px;
   padding: 0.15rem 0.6rem;
 }
+
+/* ---- Track 4 additions: filters, evidence, settings, on-call ---- */
+
+.filter-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.evidence-filters {
+  margin-bottom: 0.75rem;
+}
+
+.evidence-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.evidence-meta {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+
+.evidence-meta dt {
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.evidence-meta dd {
+  margin: 0;
+}
+
+.snippet-full {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.success {
+  color: var(--good);
+  font-weight: 600;
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--bad);
+  border-color: var(--bad);
+  align-self: flex-start;
+}
+
+.btn-danger:hover {
+  background: rgba(224, 86, 86, 0.12);
+}
+
+.danger-zone {
+  border-color: var(--bad);
+}
+
+.analysis-detail {
+  margin: 0.75rem 0;
+}
+
+.status-queued,
+.status-running {
+  background: rgba(122, 162, 255, 0.15);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.status-completed {
+  background: rgba(47, 191, 113, 0.15);
+  color: var(--good);
+  border-color: var(--good);
+}
+
+.status-failed {
+  background: rgba(224, 86, 86, 0.15);
+  color: var(--bad);
+  border-color: var(--bad);
+}

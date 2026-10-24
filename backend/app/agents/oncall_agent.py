@@ -16,14 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-try:
-    from app.agents.base import run_with_fallback
-except ImportError:  # harness imports as backend.app.*: fix sys.path first
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-    from app.agents.base import run_with_fallback
+from app.agents.base import run_with_fallback
 
 from app.schemas.agent_outputs import OnCallDiagnosisOutput, TelemetryCitation
 
@@ -137,12 +130,17 @@ def diagnose_incident(
 
     def _parse(raw: dict[str, Any]) -> OnCallDiagnosisOutput:
         # Enforce read-only flag and source allowlist regardless of model output.
+        # Unknown sources are rejected (never silently coerced) so telemetry
+        # citations stay auditable.
         raw = dict(raw)
         raw["read_only_verified"] = True
         citations = []
         for c in raw.get("evidence_citations", []) or []:
             if isinstance(c, dict) and c.get("source") not in _ALLOWED_SOURCES:
-                c = dict(c, source="loki")
+                raise ValueError(
+                    f"Unknown telemetry source {c.get('source')!r}; allowed: "
+                    f"{sorted(_ALLOWED_SOURCES)}"
+                )
             citations.append(c)
         raw["evidence_citations"] = citations
         return OnCallDiagnosisOutput.model_validate(raw)

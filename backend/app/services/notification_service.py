@@ -37,33 +37,52 @@ SMTP_TIMEOUT_SECONDS = 15
 
 
 class EphemeralNotificationRegistry:
-    """Volatile ``dict[UUID, str]`` holding one-time notification recipients."""
+    """Volatile ``dict[UUID, str]`` holding one-time notification recipients.
+
+    Keys accept ``str | UUID`` (normalized to :class:`UUID`). The Track 1 API
+    layer must call :func:`queue_notification` to stage an address; the Track 3
+    worker consumes it via :meth:`pop_once` / :meth:`consume_or_none` or
+    :func:`send_and_purge` (purge-before-send, single use).
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._store: dict[UUID, str] = {}
 
-    def set(self, analysis_run_id: UUID, email: str) -> None:
+    @staticmethod
+    def _normalize_key(analysis_run_id: UUID | str) -> UUID:
+        if isinstance(analysis_run_id, UUID):
+            return analysis_run_id
+        return UUID(str(analysis_run_id))
+
+    def set(self, analysis_run_id: UUID | str, email: str) -> None:
         """Stage a one-time recipient address in volatile RAM only."""
-        if not isinstance(analysis_run_id, UUID):
-            analysis_run_id = UUID(str(analysis_run_id))
+        analysis_run_id = self._normalize_key(analysis_run_id)
         if not _EMAIL_RE.match(email.strip()):
             raise ValueError("Invalid one-time notification email address.")
         with self._lock:
             self._store[analysis_run_id] = email.strip()
 
-    def pop_once(self, analysis_run_id: UUID) -> str | None:
+    def pop_once(self, analysis_run_id: UUID | str) -> str | None:
         """Atomically retrieve AND purge the staged address (single use)."""
-        if not isinstance(analysis_run_id, UUID):
-            analysis_run_id = UUID(str(analysis_run_id))
+        analysis_run_id = self._normalize_key(analysis_run_id)
         with self._lock:
             return self._store.pop(analysis_run_id, None)
 
-    def has(self, analysis_run_id: UUID) -> bool:
-        if not isinstance(analysis_run_id, UUID):
-            analysis_run_id = UUID(str(analysis_run_id))
+    def consume_or_none(self, analysis_run_id: UUID | str) -> str | None:
+        """Worker-facing alias for :meth:`pop_once` (missing entry → None)."""
+        return self.pop_once(analysis_run_id)
+
+    def has(self, analysis_run_id: UUID | str) -> bool:
+        if isinstance(analysis_run_id, UUID):
+            key = analysis_run_id
+        else:
+            try:
+                key = UUID(str(analysis_run_id))
+            except ValueError:
+                return False
         with self._lock:
-            return analysis_run_id in self._store
+            return key in self._store
 
     def __len__(self) -> int:
         with self._lock:
@@ -76,12 +95,17 @@ EPHEMERAL_NOTIFICATIONS = EphemeralNotificationRegistry()
 
 
 def queue_notification(
-    analysis_run_id: UUID, email: str | None, *, acknowledged: bool
+    analysis_run_id: UUID | str, email: str | None, *, acknowledged: bool
 ) -> bool:
     """Stage a one-time notification address (API-layer entry point).
 
+    The Track 1 API (``POST /analyses``) must call this function to stage
+    ``notify_email_once``; the Track 3 worker later consumes it via
+    :func:`send_and_purge` (which uses ``pop_once``/``consume_or_none``).
+    The worker no-ops safely when nothing was staged.
+
     Args:
-        analysis_run_id: Queue record the address belongs to.
+        analysis_run_id: Queue record the address belongs to (``str|UUID``).
         email: Optional ``notify_email_once`` value (None = no notification).
         acknowledged: Must be True (mirrors ``acknowledge_ephemeral_email``).
 
@@ -96,7 +120,7 @@ def queue_notification(
         )
     EPHEMERAL_NOTIFICATIONS.set(analysis_run_id, str(email))
     # Deliberately log only the run id — never the address.
-    logger.info("Ephemeral notification staged.")
+    logger.info("Ephemeral notification staged for run %s.", analysis_run_id)
     return True
 
 
@@ -125,7 +149,7 @@ def _smtp_settings() -> dict[str, object]:
 
 
 def send_and_purge(
-    analysis_run_id: UUID,
+    analysis_run_id: UUID | str,
     subject: str,
     body_text: str,
     *,
@@ -134,11 +158,13 @@ def send_and_purge(
     """Send the completion email to the staged address, then purge it.
 
     The address is popped BEFORE sending so it is purged on success AND on
-    failure. The address value never appears in logs, exceptions, or traces —
-    only the boolean outcome and the run id are recorded.
+    failure (including :class:`smtplib.SMTPException`). The address value
+    never appears in logs, exceptions, or traces — only the boolean outcome
+    and the run id are recorded.
+    Missing entry (nothing queued) is a safe no-op returning False.
 
     Args:
-        analysis_run_id: Queue record whose staged address to consume.
+        analysis_run_id: Queue record whose staged address to consume (str|UUID).
         subject: Email subject line.
         body_text: Plain-text body.
         registry: Registry to use (defaults to the process singleton).
@@ -151,6 +177,7 @@ def send_and_purge(
     reg = registry if registry is not None else EPHEMERAL_NOTIFICATIONS
     recipient = reg.pop_once(analysis_run_id)  # purge-first: single use
     if not recipient:
+        logger.info("No ephemeral notification queued for run %s.", analysis_run_id)
         return False
     cfg = _smtp_settings()
     message = EmailMessage()
@@ -175,9 +202,13 @@ def send_and_purge(
                 if cfg["user"]:
                     smtp.login(str(cfg["user"]), str(cfg["password"]))
                 smtp.send_message(message)
-        logger.info("Ephemeral notification sent.")
+        logger.info("Ephemeral notification sent for run %s.", analysis_run_id)
         return True
     except Exception as exc:
-        # Log only the failure class — never the recipient address.
-        logger.warning("Ephemeral notification failed (%s).", type(exc).__name__)
+        # Log only the failure class + run id — never the recipient address.
+        logger.warning(
+            "Ephemeral notification failed (%s) for run %s.",
+            type(exc).__name__,
+            analysis_run_id,
+        )
         return False

@@ -23,6 +23,14 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  // NOTE: webServer startup is intentionally left to the developer/CI
-  // (Track 6). Specs skip gracefully when the frontend is not running.
+  // Track 5: start the Vite dev server for UI assertions when it is not
+  // already running. `reuseExistingServer: !CI` keeps local runs fast while
+  // CI always boots a fresh server. API-dependent suites still skip gracefully
+  // when the backend is absent — the webServer only guarantees the frontend.
+  webServer: {
+    command: 'npm run dev',
+    url: 'http://localhost:5173',
+    reuseExistingServer: !process.env.CI,
+    timeout: 120 * 1000,
+  },
 });

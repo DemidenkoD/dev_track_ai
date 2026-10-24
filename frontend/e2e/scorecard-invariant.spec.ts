@@ -72,6 +72,26 @@ const STUB_SCORECARD: ScorecardResponse = {
       effective_points: 2,
       evidence_items: [],
     } satisfies CriterionAssessment,
+    {
+      id: '00000000-0000-0000-0000-000000000013',
+      analysis_run_id: '00000000-0000-0000-0000-000000000002',
+      project_id: '00000000-0000-0000-0000-000000000001',
+      assessment_milestone_id: '00000000-0000-0000-0000-000000000023',
+      criterion_code: 'observability',
+      criterion_name: 'Observability',
+      scoring_levels: [{ points: 2, description: 'Dashboards, logs and traces wired' }],
+      max_points: 2,
+      ai_proposed_points: 0,
+      ai_reasoning: 'No observability config discovered yet.',
+      ai_confidence: 0.4,
+      missing_for_next_level: 'Add Prometheus metrics and Loki log shipping.',
+      score_state: 'needs_review',
+      human_override_points: null,
+      human_override_reason: null,
+      overridden_at: null,
+      effective_points: 0,
+      evidence_items: [],
+    } satisfies CriterionAssessment,
   ],
 };
 
@@ -112,14 +132,18 @@ test.describe('scorecard invariants (stubbed, no backend)', () => {
 
   test('stub contract payload is internally consistent', () => {
     // Pure contract check: runs even when the frontend is down.
+    const seen = new Set<string>();
     for (const c of STUB_SCORECARD.criteria_assessments) {
       expect(['estimated', 'verified', 'needs_review']).toContain(c.score_state);
+      seen.add(c.score_state);
       const effective =
         c.human_override_points !== null && c.human_override_points !== undefined
           ? c.human_override_points
           : c.ai_proposed_points;
       expect(c.effective_points).toBe(effective);
     }
+    // All three score states are represented in the stub (incl. needs_review).
+    expect(seen).toEqual(new Set(['estimated', 'verified', 'needs_review']));
     expect(STUB_SCORECARD.advisory_disclaimer.toLowerCase()).toContain('advisory');
   });
 
@@ -138,13 +162,17 @@ test.describe('scorecard invariants (stubbed, no backend)', () => {
 
     // When the real scorecard page exists, it must expose these test-ids
     // (Track 4 contract). Against the stub route above, assert at minimum
-    // that estimated/verified badges are visually distinct states.
+    // that estimated/verified/needs_review badges are visually distinct states.
     await page.setContent(renderStubScorecard());
     const estimated = page.locator('[data-score-state="estimated"]');
     const verified = page.locator('[data-score-state="verified"]');
+    const needsReview = page.locator('[data-score-state="needs_review"]');
     await expect(estimated).toBeVisible();
     await expect(verified).toBeVisible();
+    await expect(needsReview).toBeVisible();
     await expect(estimated.first()).not.toHaveAttribute('data-score-state', 'verified');
+    await expect(needsReview.first()).not.toHaveAttribute('data-score-state', 'estimated');
+    await expect(page.getByTestId('score-state-badge').nth(2)).toContainText(/needs_review/);
     await expect(page.getByTestId('advisory-disclaimer')).toContainText(/advisory/i);
     await expect(page.getByTestId('human-override')).toContainText(/Override: 2/);
     await expect(page.getByTestId('ai-proposal').nth(1)).toContainText(/AI: 1/);

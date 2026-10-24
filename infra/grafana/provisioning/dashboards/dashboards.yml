@@ -10,4 +10,9 @@ providers:
     updateIntervalSeconds: 30
     allowUiUpdates: true
     options:
-      path: /etc/grafana/provisioning/dashboards
+      # JSON dashboard files are mounted at /var/lib/grafana/dashboards
+      # (see docker-compose.yml grafana volumes). Do NOT point this at
+      # /etc/grafana/provisioning/dashboards — that directory holds this
+      # provisioning file itself; mounting host dashboards over it would
+      # shadow (hide) the provider config.
+      path: /var/lib/grafana/dashboards

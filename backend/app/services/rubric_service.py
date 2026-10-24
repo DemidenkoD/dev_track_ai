@@ -14,17 +14,13 @@ Follows ``.agents/skills/rubric-evaluation/SKILL.md``:
 from __future__ import annotations
 
 import json
+import re
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-try:
-    from app.agents.base import ADVISORY_NOTICE  # noqa: F401 (path bootstrap)
-except ImportError:  # harness imports as backend.app.*: fix sys.path first
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-
+from app.agents.base import ADVISORY_NOTICE  # noqa: F401  # single-source disclaimer
 from app.schemas.agent_outputs import ExtractedRubricOutput
 
 OFFICIAL_RUBRIC_SLUG = "ai-dev-tools-zoomcamp-2026"
@@ -296,27 +292,141 @@ def build_evidence_bundle(evidence_items: Sequence[Any]) -> list[dict[str, Any]]
     return bundle
 
 
+def utcnow() -> datetime:
+    """Timezone-aware UTC timestamp for ``retrieved_at`` stamping."""
+    return datetime.now(timezone.utc)
+
+
+def bump_patch_version(version: str) -> str:
+    """Immutable version-bump helper: ``2026.1.0`` → ``2026.1.1``.
+
+    Never mutates an existing row — callers create a NEW rubric row with the
+    returned version. Trailing numeric component is incremented; non-numeric
+    versions gain a ``.1`` suffix.
+    """
+    text = (version or "").strip() or OFFICIAL_RUBRIC_VERSION
+    match = re.match(r"^(.*?)(\d+)\s*$", text)
+    if not match:
+        return f"{text}.1"
+    prefix, last = match.group(1), match.group(2)
+    return f"{prefix}{int(last) + 1}"
+
+
+def resolve_immutable_version(
+    proposed_version: str, existing_versions: Sequence[str] | None = None
+) -> str:
+    """Return a non-colliding version (bumps patch until unique).
+
+    If ``proposed_version`` already exists for the same slug, the patch is
+    bumped (e.g. ``2026.1.0`` → ``2026.1.1``) until free. The existing rows
+    are never modified.
+    """
+    existing = set(existing_versions or [])
+    candidate = (proposed_version or "").strip() or OFFICIAL_RUBRIC_VERSION
+    guard = 0
+    while candidate in existing and guard < 100:
+        candidate = bump_patch_version(candidate)
+        guard += 1
+    return candidate
+
+
+def _coerce_text_content(raw_content: str | bytes | None) -> str:
+    """Decode pdf/text payloads without executing anything."""
+    if raw_content is None:
+        return ""
+    if isinstance(raw_content, bytes):
+        # PDF binaries or raw bytes: decode lossily as text, never execute.
+        return raw_content.decode("utf-8", errors="replace")
+    return str(raw_content)
+
+
+def fetch_url_text(url: str, timeout_seconds: float = 10.0) -> str:
+    """Read-only HTTP(S) fetch for ``source_type='url'`` ingestion.
+
+    No code execution, no redirects to private hosts beyond stdlib fetch;
+    callers should pass only public http(s) URLs. Bounded timeout keeps
+    ingestion safe in CI/worker contexts.
+    """
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        raise ValueError(f"refusing to fetch non-http(s) rubric URL: {url!r}")
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "DevTrackAI-rubric-ingest/0.3.0"}, method="GET"
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+        charset = response.headers.get_content_charset() or "utf-8"
+        payload = response.read(2_000_000)  # 2 MB cap
+        try:
+            return payload.decode(charset, errors="replace")
+        except LookupError:
+            return payload.decode("utf-8", errors="replace")
+
+
 def ingest_raw_content(
-    raw_content: str,
+    raw_content: str | bytes | None,
     title: str = "Custom Course Rubric",
     course_name: str = "Custom Course",
     source_type: str = "text",
     source_url: str | None = None,
+    existing_versions: Sequence[str] | None = None,
+    version: str | None = None,
+    fetch_timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
     """Ingest raw rubric text via RubricAnalyst; return ExtractedRubricOutput dict.
 
+    Handles ``source_type``:
+
+    - ``url``: ``source_url`` (or ``raw_content`` when it is a URL) is fetched
+      with a read-only HTTP GET + timeout; fetched text is ingested. Never
+      executes remote content.
+    - ``pdf``/``text``/``markdown``: ``raw_content`` (str or bytes) is decoded
+      as text without execution.
+    - Always stamps ``retrieved_at`` with :func:`utcnow` (UTC).
+    - Resolves an immutable version: when the proposed ``version`` collides
+      with ``existing_versions`` for the same slug, the patch is bumped
+      (``2026.1.0`` → ``2026.1.1``); existing rows are never mutated.
+
     Uses the deterministic fallback automatically when Gemini is unavailable,
-    so seeding/ingestion never crashes CI.
+    so seeding/ingestion never crashes CI. Never writes ``human_*`` fields —
+    agents only propose ``ai_*`` values; overrides are applied by Track 1.
     """
+    normalized_source = (source_type or "text").lower()
+    if normalized_source not in {"url", "pdf", "markdown", "text"}:
+        normalized_source = "text"
+    fetch_source_url = source_url
+    effective_text: str
+    if normalized_source == "url":
+        fetch_target = (source_url or "").strip() or (
+            raw_content.strip()
+            if isinstance(raw_content, str) and raw_content.strip().lower().startswith(("http://", "https://"))
+            else ""
+        )
+        if not fetch_target:
+            raise ValueError("source_type='url' requires a source_url or URL raw_content.")
+        fetch_source_url = fetch_target
+        effective_text = fetch_url_text(fetch_target, timeout_seconds=fetch_timeout_seconds)
+    else:
+        effective_text = _coerce_text_content(raw_content)
+
     from app.agents.rubric_analyst import extract_rubric
+
     output = extract_rubric(
-        raw_content,
+        effective_text,
         title=title,
         course_name=course_name,
-        source_type=source_type,
-        source_url=source_url,
+        source_type=normalized_source,
+        source_url=fetch_source_url,
     )
-    return output.model_dump()
+    payload = output.model_dump()
+    # Provenance + immutability metadata (never human_* fields).
+    payload["retrieved_at"] = utcnow().isoformat()
+    payload["source_type"] = normalized_source
+    if fetch_source_url:
+        payload["source_url"] = fetch_source_url
+    proposed = (version or payload.get("version") or OFFICIAL_RUBRIC_VERSION)
+    payload["version"] = resolve_immutable_version(proposed, existing_versions)
+    payload.pop("human_override_points", None)
+    payload.pop("human_override_reason", None)
+    return payload
 
 
 def merge_human_override(

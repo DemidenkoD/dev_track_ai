@@ -423,7 +423,7 @@ class SecurityReport(Base):
     commit_sha: Mapped[str] = mapped_column(String(64))
     overall_status: Mapped[SecurityStatus] = mapped_column(
         SqlEnum(SecurityStatus, native_enum=False, length=32),
-        default=SecurityStatus.UNKNOWN,
+        default=SecurityStatus.WARNING,
     )
     scanners_executed: Mapped[list] = mapped_column(JSON, default=list)
     ai_executive_summary: Mapped[str] = mapped_column(Text, default="")

@@ -3,42 +3,46 @@
 Layer A agents per ``docs/specs/AGENT_TEAM_SPEC.md``. All are advisory and
 read-only: they never push commits, open PRs, or mutate user repositories,
 and AI point estimates are never presented as official course grades.
+
+Single source for the advisory disclaimer: :data:`ADVISORY_NOTICE` in
+``app.agents.base``. (Track 3's ``app.services.analysis_pipeline`` carries a
+local copy for import-safety; Track 2 never duplicates the string elsewhere.)
 """
 
-try:
-    from app.agents.base import (
-        ADVISORY_NOTICE,
-        DEFAULT_GEMINI_MODEL,
-        GeminiUnavailableError,
-        call_gemini_structured,
-        get_gemini_api_key,
-        get_gemini_model,
-        is_gemini_configured,
-        run_with_fallback,
-    )
-except ImportError:  # harness imports as backend.app.*: fix sys.path first
-    import sys as _sys
-    from pathlib import Path as _Path
+from __future__ import annotations
 
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-    from app.agents.base import (
-        ADVISORY_NOTICE,
-        DEFAULT_GEMINI_MODEL,
-        GeminiUnavailableError,
-        call_gemini_structured,
-        get_gemini_api_key,
-        get_gemini_model,
-        is_gemini_configured,
-        run_with_fallback,
-    )
+from app.agents import (
+    diary_analyst,
+    oncall_agent,
+    progress_analyst,
+    project_mentor,
+    rubric_analyst,
+    security_reviewer,
+)
+from app.agents.base import (
+    ADVISORY_NOTICE,
+    DEFAULT_GEMINI_MODEL,
+    GeminiUnavailableError,
+    call_gemini_structured,
+    get_gemini_api_key,
+    get_gemini_model,
+    is_gemini_configured,
+    run_with_fallback,
+)
 
 __all__ = [
     "ADVISORY_NOTICE",
     "DEFAULT_GEMINI_MODEL",
     "GeminiUnavailableError",
     "call_gemini_structured",
+    "diary_analyst",
     "get_gemini_api_key",
     "get_gemini_model",
     "is_gemini_configured",
+    "oncall_agent",
+    "progress_analyst",
+    "project_mentor",
+    "rubric_analyst",
     "run_with_fallback",
+    "security_reviewer",
 ]

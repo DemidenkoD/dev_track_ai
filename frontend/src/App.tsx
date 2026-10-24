@@ -6,6 +6,9 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
+import { RubricsPage } from './pages/RubricsPage';
+import { RubricDetailPage } from './pages/RubricDetailPage';
+import { OnCallPage } from './pages/OnCallPage';
 
 function ThemeToggle(): JSX.Element {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -43,7 +46,13 @@ function NavBar(): JSX.Element {
         DevTrack AI
       </Link>
       <nav className="nav-links" aria-label="Primary">
-        {isAuthenticated && <Link to="/dashboard">Dashboard</Link>}
+        {isAuthenticated && (
+          <>
+            <Link to="/dashboard">Dashboard</Link>
+            <Link to="/rubrics">Rubrics</Link>
+            <Link to="/oncall">On-Call</Link>
+          </>
+        )}
       </nav>
       <div className="nav-right">
         <ThemeToggle />
@@ -97,6 +106,30 @@ export function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <ProjectDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/rubrics"
+            element={
+              <ProtectedRoute>
+                <RubricsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/rubrics/:rubricId"
+            element={
+              <ProtectedRoute>
+                <RubricDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/oncall"
+            element={
+              <ProtectedRoute>
+                <OnCallPage />
               </ProtectedRoute>
             }
           />

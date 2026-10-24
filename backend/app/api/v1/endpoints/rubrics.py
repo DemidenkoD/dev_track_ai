@@ -109,8 +109,32 @@ def ingest_rubric(
         raise HTTPException(
             status_code=400, detail="source_url is required for url rubrics"
         )
+    # Contract validation: file/text-sourced rubrics must carry inline content.
+    # (422 = semantically unprocessable per FastAPI validation conventions.)
+    if body.source_type in (
+        RubricSourceType.PDF,
+        RubricSourceType.MARKDOWN,
+        RubricSourceType.TEXT,
+    ) and not (body.raw_content and body.raw_content.strip()):
+        raise HTTPException(
+            status_code=422,
+            detail=f"raw_content is required for source_type '{body.source_type.value}'",
+        )
+    slug = f"{_slugify(body.title)}-{body.version}"
+    # Rubric versioning invariant: slug+version is unique; never overwrite in
+    # place — ingesting an existing version is a conflict.
+    duplicate = (
+        db.query(Rubric)
+        .filter(Rubric.slug == slug, Rubric.version == body.version)
+        .first()
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Rubric slug '{slug}' version '{body.version}' already exists",
+        )
     rubric = Rubric(
-        slug=f"{_slugify(body.title)}-{body.version}",
+        slug=slug,
         title=body.title,
         course_name=body.course_name,
         source_type=body.source_type,

@@ -29,6 +29,22 @@ export type DeploymentDiscoverySource = 'readme' | 'config' | 'manual';
 export type PriorityLevel = 'critical' | 'high' | 'medium' | 'low';
 export type RiskLevel = 'low' | 'medium' | 'high';
 
+/** All contract `evidence_type` filter values for the Evidence explorer dropdown. */
+export const EVIDENCE_TYPES: EvidenceType[] = [
+  'commit',
+  'source_file',
+  'readme',
+  'documentation',
+  'ci_workflow',
+  'test_result',
+  'docker_compose',
+  'deployment_url',
+  'observability_config',
+  'security_report',
+  'agent_config',
+  'diary_entry',
+];
+
 export interface UserProfile {
   username: string;
   role: string;
@@ -141,10 +157,32 @@ export interface ProjectDetail extends ProjectSummary {
   scope_creep_flag: boolean;
 }
 
+export interface DashboardDeadlineItem {
+  project_id: string;
+  project_name: string;
+  target_date: string;
+  status: ProjectStatus;
+}
+
+export interface DashboardTotals {
+  estimated_points: number;
+  verified_points: number;
+  effective_points: number;
+  max_points: number;
+  meeting_passing_threshold: number;
+}
+
 export interface DashboardOverview {
   total_projects: number;
   active_projects: number;
   projects: ProjectSummary[];
+  /**
+   * Optional server-provided aggregates (forward-compatible with future
+   * contract revisions). When absent, the frontend computes equivalent
+   * aggregates client-side from `projects`. Never invented — derived only.
+   */
+  upcoming_deadlines?: DashboardDeadlineItem[];
+  totals?: DashboardTotals | null;
 }
 
 export interface DevelopmentMilestone {

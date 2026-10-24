@@ -31,6 +31,10 @@ def create_app() -> FastAPI:
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
+        # Intentional: wildcard origins ("*") cannot be combined with
+        # credentials per the Fetch standard — and this API authenticates via
+        # `Authorization: Bearer` headers, never cookies, so credentials stay
+        # disabled. Do not set allow_credentials=True while origins is "*".
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

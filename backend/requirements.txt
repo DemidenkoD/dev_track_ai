@@ -1,0 +1,12 @@
+# DevTrack AI — Track 1 backend dependencies (pinned floors, verified 2026-10-24).
+# Install: pip install -r backend/requirements.txt
+# Every import below is exercised by Track 1 modules (core/db/models/schemas/api/main).
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+pydantic>=2.7,<3.0
+pydantic-settings>=2.2
+email-validator>=2.0
+SQLAlchemy>=2.0,<3.0
+psycopg[binary]>=3.1
+PyJWT>=2.8
+httpx>=0.27

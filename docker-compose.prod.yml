@@ -37,6 +37,16 @@ services:
     image: devtrack-ai-backend:${IMAGE_TAG:-latest}
     restart: always
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    # Loki log shipping (OPT-IN): requires the loki docker plugin on the VPS:
+    #   docker plugin install grafana/loki-docker-driver:latest --alias loki --grant-all-permissions
+    # Then uncomment to ship with {app="backend"} labels. Stays commented so
+    # a plugin-less host still boots.
+    # logging:
+    #   driver: loki
+    #   options:
+    #     loki-url: "http://localhost:3100/loki/api/v1/push"
+    #     loki-external-labels: "app=backend,env=production"
+    #     keep-file: "true"
     deploy:
       resources:
         limits:
@@ -73,6 +83,22 @@ services:
     image: devtrack-ai-backend:${IMAGE_TAG:-latest}
     restart: always
     command: ["python", "-m", "app.worker.runner"]
+    # Loki log shipping (OPT-IN, same plugin prerequisite as backend):
+    # uncomment to ship with {app="worker"} labels.
+    # logging:
+    #   driver: loki
+    #   options:
+    #     loki-url: "http://localhost:3100/loki/api/v1/push"
+    #     loki-external-labels: "app=worker,env=production"
+    #     keep-file: "true"
+    healthcheck:
+      # Slim image has no pg_isready/curl: stdlib TCP dial to db:5432 plus
+      # PID 1 cmdline must be the Track 3 runner (update if renamed).
+      test: ["CMD-SHELL", "python -c \"import socket,pathlib; socket.create_connection(('db',5432),timeout=5).close(); cmd=pathlib.Path('/proc/1/cmdline').read_bytes().decode(); assert 'runner' in cmd, cmd\""]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     deploy:
       resources:
         limits:
@@ -103,6 +129,13 @@ services:
       dockerfile: frontend/Dockerfile
     image: devtrack-ai-frontend:${IMAGE_TAG:-latest}
     restart: always
+    healthcheck:
+      # nginx:alpine ships busybox wget (no curl needed).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -111,7 +144,7 @@ services:
           memory: 64M
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
     networks: [app]
 
   # Edge reverse proxy: HTTPS termination + security headers + /api routing.
@@ -127,8 +160,10 @@ services:
       - certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot:ro
     depends_on:
-      - backend
-      - frontend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
     networks: [app]
 
   prometheus:
@@ -143,6 +178,12 @@ services:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./infra/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prom_data_prod:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -158,6 +199,12 @@ services:
     volumes:
       - ./infra/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
       - loki_data_prod:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -173,6 +220,12 @@ services:
     volumes:
       - ./infra/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
       - tempo_data_prod:/var/tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3200/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -186,12 +239,24 @@ services:
     restart: always
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin-change-me-in-production}
+      # MUST-OVERRIDE: no silent default — compose fails fast if unset so a
+      # production Grafana can never boot with a well-known password.
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD must be set in production .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana_data_prod:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # Dashboard JSONs mount to /var/lib/grafana/dashboards (NOT to
+      # /etc/grafana/provisioning/dashboards — that would shadow the
+      # dashboards.yml provider config). Must match `path:` in
+      # infra/grafana/provisioning/dashboards/dashboards.yml.
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -199,9 +264,12 @@ services:
         reservations:
           memory: 128M
     depends_on:
-      - prometheus
-      - loki
-      - tempo
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
     networks: [app]
 
 volumes:

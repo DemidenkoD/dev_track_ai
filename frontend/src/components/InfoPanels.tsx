@@ -1,9 +1,15 @@
+import { useState } from 'react';
+import type { FormEvent } from 'react';
 import type {
+  AnalysisRun,
   DeploymentCheck,
   DiarySnapshot,
   EvidenceItem,
+  EvidenceType,
   SecurityReport,
 } from '../types/api';
+import { EVIDENCE_TYPES } from '../types/api';
+import { fetchEvidence, ApiError } from '../api/client';
 
 /** Evidence / Diary / Security / Deployment tabs (read-only views). */
 export function EvidencePanel({ items }: { items: EvidenceItem[] }): JSX.Element {
@@ -11,16 +17,160 @@ export function EvidencePanel({ items }: { items: EvidenceItem[] }): JSX.Element
   return (
     <ul className="evidence-list">
       {items.map((ev) => (
-        <li key={ev.id} className="card evidence-row">
-          <span className="badge badge-unknown">{ev.evidence_type}</span>
-          <div>
-            <strong>{ev.title}</strong>
-            <p className="muted small">{ev.path_or_url}</p>
-            {ev.snippet && <pre className="snippet">{ev.snippet.slice(0, 500)}</pre>}
-          </div>
+        <li key={ev.id}>
+          <EvidenceCard item={ev} />
         </li>
       ))}
     </ul>
+  );
+}
+
+export function EvidenceCard({ item }: { item: EvidenceItem }): JSX.Element {
+  return (
+    <article className="card evidence-row">
+      <span className="badge badge-unknown">{item.evidence_type}</span>
+      <div className="evidence-body">
+        <strong>{item.title}</strong>
+        <p className="muted small">{item.path_or_url}</p>
+        <dl className="evidence-meta">
+          <div>
+            <dt>Commit</dt>
+            <dd>
+              <code>{item.commit_sha ? item.commit_sha.slice(0, 8) : '—'}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Collected</dt>
+            <dd>{item.created_at}</dd>
+          </div>
+          <div>
+            <dt>Run</dt>
+            <dd>
+              <code>{item.analysis_run_id.slice(0, 8)}</code>
+            </dd>
+          </div>
+        </dl>
+        {item.snippet && (
+          <pre className="snippet snippet-full" tabIndex={0} aria-label={`Full snippet for ${item.title}`}>
+            {item.snippet}
+          </pre>
+        )}
+        {item.metadata_json != null && Object.keys(item.metadata_json).length > 0 && (
+          <details className="levels">
+            <summary>Metadata</summary>
+            <pre className="snippet snippet-full" tabIndex={0}>
+              {JSON.stringify(item.metadata_json, null, 2)}
+            </pre>
+          </details>
+        )}
+      </div>
+    </article>
+  );
+}
+
+/**
+ * Evidence explorer with contract-backed filters.
+ * Wires `GET /api/v1/projects/{id}/evidence?evidence_type=&analysis_run_id=`
+ * via `fetchEvidence` — the only fetch path (api/client.ts).
+ */
+export function EvidenceExplorer({
+  projectId,
+  initialItems,
+  runs,
+}: {
+  projectId: string;
+  initialItems: EvidenceItem[];
+  runs: AnalysisRun[];
+}): JSX.Element {
+  const [evidenceType, setEvidenceType] = useState<string>('');
+  const [analysisRunId, setAnalysisRunId] = useState<string>('');
+  const [items, setItems] = useState<EvidenceItem[]>(initialItems);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filtered, setFiltered] = useState(false);
+
+  async function handleApply(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fetchEvidence(projectId, {
+        evidence_type: evidenceType || undefined,
+        analysis_run_id: analysisRunId.trim() || undefined,
+      });
+      setItems(result);
+      setFiltered(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Evidence query failed.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleReset(): void {
+    setEvidenceType('');
+    setAnalysisRunId('');
+    setItems(initialItems);
+    setFiltered(false);
+    setError(null);
+  }
+
+  return (
+    <section aria-label="Evidence explorer">
+      <form className="card stack evidence-filters" onSubmit={(e) => void handleApply(e)}>
+        <h3>Filter evidence</h3>
+        <div className="filter-row">
+          <label>
+            Evidence type
+            <select value={evidenceType} onChange={(e) => setEvidenceType(e.target.value)}>
+              <option value="">All types</option>
+              {EVIDENCE_TYPES.map((t: EvidenceType) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Analysis run ID
+            <input
+              value={analysisRunId}
+              onChange={(e) => setAnalysisRunId(e.target.value)}
+              placeholder="analysis_run_id (optional)"
+              list="evidence-run-ids"
+            />
+            <datalist id="evidence-run-ids">
+              {runs.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.commit_sha?.slice(0, 8) ?? r.id.slice(0, 8)} · {r.status}
+                </option>
+              ))}
+            </datalist>
+          </label>
+        </div>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="btn btn-secondary" onClick={handleReset}>
+            Reset
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            {loading ? 'Querying…' : 'Apply filters'}
+          </button>
+        </div>
+        {filtered && (
+          <p className="muted small" aria-live="polite">
+            Showing {items.length} item(s) for{' '}
+            {evidenceType ? `type=${evidenceType}` : 'all types'}
+            {analysisRunId.trim() ? ` · run=${analysisRunId.trim().slice(0, 8)}` : ''}.
+          </p>
+        )}
+      </form>
+      <EvidencePanel items={items} />
+    </section>
   );
 }
 

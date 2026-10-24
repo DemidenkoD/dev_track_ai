@@ -222,27 +222,38 @@ def clone_shallow(
     timeout_seconds: int = CLONE_TIMEOUT_SECONDS,
     max_size_mb: float = MAX_REPO_SIZE_MB_DEFAULT,
 ) -> CloneResult:
-    """Shallow-clone a public repo into an existing directory (read-only use).
+    """Shallow-clone a public repo into a non-existing child dir (read-only).
 
     Uses ``git clone --depth 50`` with strict timeouts. Never executes any
-    repository code — no hooks, no checkout scripts (``--no-checkout`` is
-    avoided so files are present for static inspection, but nothing is run).
+    repository code — no hooks, no checkout scripts (files are present for
+    static inspection only, nothing is run).
+
+    ``git clone <url> <dest>`` requires ``dest`` to NOT exist (git creates
+    it); the parent directory must exist. Callers must NOT pre-create
+    ``dest`` with ``mkdir`` — create only the parent temp dir and let git
+    create the ``checkout`` child.
 
     Args:
         url: Public GitHub URL (validated first).
-        dest_dir: Existing empty/isolated directory to clone into.
+        dest_dir: Non-existing path to clone into (parent must exist).
         depth: Clone depth (default 50).
         timeout_seconds: Subprocess timeout for the clone.
         max_size_mb: Reject checkouts larger than this.
 
     Raises:
         ValueError: On disallowed URL.
-        RuntimeError: On clone failure, timeout, or size-limit breach.
+        RuntimeError: On clone failure, timeout, size-limit breach, or when
+            ``dest`` already exists.
     """
     parsed = parse_github_url(url)  # validates allow-list first
     dest = Path(dest_dir)
-    if not dest.is_dir():
-        raise RuntimeError(f"Clone destination is not a directory: {dest}.")
+    if dest.exists():
+        raise RuntimeError(
+            f"Clone destination must not pre-exist (git creates it): {dest}."
+        )
+    parent = dest.parent
+    if str(parent) and not parent.is_dir():
+        raise RuntimeError(f"Clone parent directory does not exist: {parent}.")
     try:
         completed = subprocess.run(
             [
@@ -309,10 +320,8 @@ def shallow_clone_context(url: str) -> Iterator[CloneResult]:
     # Validate before allocating any resources.
     parse_github_url(url)
     with tempfile.TemporaryDirectory(prefix="devtrack-clone-") as tmp:
-        # git requires a non-existing target path; use a child dir.
-        target = Path(tmp) / "repo"
-        target.mkdir(parents=True, exist_ok=True)
-        # Clone into a fresh subdir to keep the temp root for metadata.
+        # git clone <url> <dest> requires dest to NOT exist — create only
+        # the parent temp dir and let git create the checkout child.
+        # Do NOT mkdir(dest) beforehand; TemporaryDirectory auto-cleans.
         dest = Path(tmp) / "checkout"
-        dest.mkdir(parents=True, exist_ok=True)
         yield clone_shallow(url, dest)

@@ -9,9 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /code
 
-# System deps for psycopg / healthchecks (curl kept tiny, no build tools retained).
+# Runtime C library for psycopg (kept even though psycopg[binary] wheels bundle
+# their own libpq, so Track 1 can switch to a non-binary build without a
+# Dockerfile change). No curl in this image by design: compose healthchecks
+# probe /api/v1/health via stdlib urllib, and the worker healthcheck uses a
+# stdlib TCP dial — nothing here needs a shell HTTP client.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl libpq5 \
+      libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 1: dependencies. If Track 1 later adds backend/requirements.txt,
@@ -38,8 +42,11 @@ RUN if [ -f requirements.txt ]; then \
     fi
 
 # Layer 2: application code (Track 1-3 owned, copied read-only here).
+# NOTE: tests/ are deliberately NOT copied into this image — the production
+# image must not ship test code (keeps the attack surface + layer size down).
+# Track 5 local runs mount them instead:
+#   docker compose run --rm -v ./backend/tests:/code/tests:ro backend pytest
 COPY app ./app
-COPY tests ./tests
 
 # Non-root runtime user (least privilege; owns /code for uvicorn + worker).
 RUN useradd --create-home --uid 10001 appuser \

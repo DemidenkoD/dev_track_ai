@@ -179,7 +179,8 @@ class ProjectSummarySchema(BaseModel):
     milestones_approved: bool
     last_analysis_at: datetime | None = None
     last_commit_sha: str | None = None
-    security_status: SecurityStatus = SecurityStatus.UNKNOWN
+    # No report yet → degraded-safe WARNING (DATABASE_SCHEMA §3.10 has no "unknown").
+    security_status: SecurityStatus = SecurityStatus.WARNING
     deployment_reachable: bool | None = None
     expected_score: ExpectedScoreSummarySchema = Field(
         default_factory=ExpectedScoreSummarySchema

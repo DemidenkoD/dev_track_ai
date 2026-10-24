@@ -27,14 +27,7 @@ import json
 import re
 from typing import Any, Sequence
 
-try:
-    from app.agents.base import ADVISORY_NOTICE, run_with_fallback
-except ImportError:  # harness imports as backend.app.*: fix sys.path first
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-    from app.agents.base import ADVISORY_NOTICE, run_with_fallback
+from app.agents.base import ADVISORY_NOTICE, run_with_fallback
 
 from app.schemas.agent_outputs import (
     CriterionScoreProposal,
@@ -198,13 +191,112 @@ def _normalize_criteria(criteria: Sequence[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _extract_evidence_paths(evidence_items: Sequence[Any] | None) -> list[str]:
+    """Collect concrete path/URL citations from an evidence bundle.
+
+    Accepts dicts (``path_or_url``), ORM-like objects, or plain strings.
+    Used so fallbacks never return empty ``cited_evidence_paths`` when
+    evidence was actually passed in.
+    """
+    paths: list[str] = []
+    for ev in evidence_items or []:
+        if isinstance(ev, str):
+            cand = ev.strip()
+        elif isinstance(ev, dict):
+            cand = str(ev.get("path_or_url") or ev.get("path") or "").strip()
+        else:
+            cand = str(
+                getattr(ev, "path_or_url", getattr(ev, "path", "") or "") or ""
+            ).strip()
+        if cand and cand not in paths and cand != "?":
+            paths.append(cand)
+    return paths
+
+
+def _has_reachable_deployment_evidence(evidence_items: Sequence[Any] | None) -> bool:
+    """True when the bundle contains a plausible reachable deployment URL."""
+    for ev in evidence_items or []:
+        if isinstance(ev, dict):
+            etype = str(ev.get("evidence_type", "")).lower()
+            url = str(ev.get("path_or_url", "") or "")
+            meta = ev.get("metadata_json", ev.get("metadata", {})) or {}
+        else:
+            etype = str(getattr(ev, "evidence_type", "") or "").lower()
+            url = str(getattr(ev, "path_or_url", "") or "")
+            meta = getattr(ev, "metadata_json", {}) or {}
+        if etype == "deployment_url" and url.startswith("https://"):
+            if isinstance(meta, dict):
+                status = meta.get("http_status", meta.get("http_status_code"))
+                reachable = meta.get("is_reachable")
+                # Explicit failure markers mean "not reachable".
+                if reachable is False:
+                    continue
+                if isinstance(status, int) and status >= 500:
+                    continue
+            return True
+        # Raw https URL evidence outside a typed record still counts.
+        if url.startswith("https://") and "deploy" in (etype + url).lower():
+            return True
+    return False
+
+
+def _apply_evidence_grounding(
+    output: ScorecardEvaluationOutput,
+    evidence_items: Sequence[Any] | None,
+) -> ScorecardEvaluationOutput:
+    """Post-validator: enforce evidence grounding on every proposal.
+
+    - Propagates input ``path_or_url`` values into empty
+      ``cited_evidence_paths`` so live and fallback paths never drop citations.
+    - If the bundle is empty and ``ai_confidence >= 0.70`` → force
+      ``needs_review`` and cap confidence below 0.70.
+    - Live-verification criteria (deployment / alerting / on-call) without a
+      reachable URL can never be ``verified`` — demote to ``needs_review``
+      with capped confidence.
+    """
+    bundle_paths = _extract_evidence_paths(evidence_items)
+    has_deployment = _has_reachable_deployment_evidence(evidence_items)
+    for proposal in output.criteria_evaluations:
+        if not proposal.cited_evidence_paths and bundle_paths:
+            # Keep per-criterion relevance: prefer paths mentioning the code.
+            code_hint = proposal.criterion_code.replace("_", "")
+            relevant = [
+                p for p in bundle_paths if proposal.criterion_code.split("_")[0] in p.lower()
+            ]
+            proposal.cited_evidence_paths = (relevant or bundle_paths)[:5]
+        # Empty-evidence + high confidence is never allowed.
+        if not bundle_paths and proposal.ai_confidence >= 0.70:
+            proposal.score_state = ScoreState.NEEDS_REVIEW
+            proposal.ai_confidence = min(proposal.ai_confidence, 0.69)
+        # Live-verification criteria need live proof, not static files.
+        if (
+            proposal.criterion_code in _LIVE_VERIFICATION_CODES
+            and not has_deployment
+        ):
+            # Deployment itself needs a reachable URL; alerting/on-call need
+            # observable telemetry which the offline bundle cannot prove.
+            if proposal.score_state == ScoreState.VERIFIED or proposal.ai_confidence >= 0.70:
+                proposal.score_state = ScoreState.NEEDS_REVIEW
+                proposal.ai_confidence = min(proposal.ai_confidence, 0.69)
+                if "live runtime verification" not in proposal.ai_reasoning.lower():
+                    proposal.ai_reasoning = (
+                        proposal.ai_reasoning.rstrip() + " Requires live runtime "
+                        "verification (reachable deployment/telemetry); "
+                        "set to needs_review. " + ADVISORY_NOTICE
+                    )
+    return output
+
+
 def _fallback_scored_criterion(
-    criterion: dict[str, Any], evidence_text: str
+    criterion: dict[str, Any],
+    evidence_text: str,
+    evidence_paths: Sequence[str] | None = None,
 ) -> CriterionScoreProposal:
     """Deterministic rule-based scoring (offline/CI fallback).
 
     Conservative: awards 0 with needs_review unless keyword evidence matches;
     live-verification criteria always stay needs_review without reachable proof.
+    Always propagates concrete ``cited_evidence_paths`` when available.
     """
     code = criterion["code"]
     max_points: int = int(criterion.get("max_points", 0) or 0)
@@ -215,6 +307,7 @@ def _fallback_scored_criterion(
     next_level_desc = None
     if levels and len(levels) > 1:
         next_level_desc = str(levels[1].get("description", ""))[:500]
+    paths = list(evidence_paths or [])
 
     if code in _LIVE_VERIFICATION_CODES:
         return CriterionScoreProposal(
@@ -231,7 +324,7 @@ def _fallback_scored_criterion(
                 + "requires human review. " + ADVISORY_NOTICE
             ),
             missing_for_next_level=next_level_desc,
-            cited_evidence_paths=[],
+            cited_evidence_paths=paths[:5],
         )
     if hits:
         awarded = 1 if max_points >= 1 else 0
@@ -248,7 +341,7 @@ def _fallback_scored_criterion(
                 f"scoring-level proof was not verified. " + ADVISORY_NOTICE
             ),
             missing_for_next_level=next_level_desc,
-            cited_evidence_paths=[],
+            cited_evidence_paths=paths[:5],
         )
     return CriterionScoreProposal(
         criterion_code=code,
@@ -261,7 +354,7 @@ def _fallback_scored_criterion(
             f"bundle. " + ADVISORY_NOTICE
         ),
         missing_for_next_level=next_level_desc,
-        cited_evidence_paths=[],
+        cited_evidence_paths=paths[:5],
     )
 
 
@@ -272,8 +365,11 @@ def fallback_scorecard(
 ) -> ScorecardEvaluationOutput:
     norm = _normalize_criteria(criteria)
     evidence_text = _evidence_to_bullets(evidence_items or [])
-    proposals = [_fallback_scored_criterion(c, evidence_text) for c in norm]
-    return ScorecardEvaluationOutput(
+    bundle_paths = _extract_evidence_paths(evidence_items)
+    proposals = [
+        _fallback_scored_criterion(c, evidence_text, bundle_paths) for c in norm
+    ]
+    output = ScorecardEvaluationOutput(
         criteria_evaluations=proposals,
         overall_assessment_summary=(
             "Deterministic offline fallback scorecard (Gemini unavailable). "
@@ -281,15 +377,36 @@ def fallback_scorecard(
             + ADVISORY_NOTICE
         ),
     )
+    return _apply_evidence_grounding(output, evidence_items or [])
+
+
+def _parse_scorecard(
+    raw: dict[str, Any], evidence_items: Sequence[Any] | None
+) -> ScorecardEvaluationOutput:
+    """Validate live Gemini output, then apply the SAME grounding guards."""
+    output = ScorecardEvaluationOutput.model_validate(raw)
+    return _apply_evidence_grounding(output, evidence_items or [])
 
 
 def evaluate_scorecard(
-    criteria: Sequence[Any],
+    criteria: Sequence[Any] | None = None,
     evidence_items: Sequence[Any] | None = None,
     project_name: str = "",
     commit_sha: str | None = None,
+    evidence_bundle: Sequence[Any] | None = None,
+    **_: Any,
 ) -> ScorecardEvaluationOutput:
-    """Evaluate repo evidence against official scoring levels (Steps 1-4)."""
+    """Evaluate repo evidence against official scoring levels (Steps 1-4).
+
+    Clean adapter for Track 1/Track 3: accepts either ``evidence_items`` or
+    the ``evidence_bundle`` alias. ``criteria`` are official rubric criteria
+    (DB rows, dicts, or Pydantic models) with exact ``scoring_levels``.
+    """
+    # Alias support: Track 3 may pass evidence_bundle=....
+    if evidence_items is None and evidence_bundle is not None:
+        evidence_items = evidence_bundle
+    if criteria is None:
+        criteria = []
     norm = _normalize_criteria(criteria)
     evidence_block = _evidence_to_bullets(evidence_items or [])
     criteria_block = _criteria_to_prompt_block(criteria)
@@ -307,11 +424,14 @@ def evaluate_scorecard(
         )
         return (RUBRIC_ANALYST_SYSTEM, user)
 
+    # Capture the bundle for the live-parse guard (same as fallback-only before).
+    bundle = list(evidence_items or [])
+
     return run_with_fallback(
         prompt_builder=_prompt,
         response_schema=ScorecardEvaluationOutput,
-        parse=lambda raw: ScorecardEvaluationOutput.model_validate(raw),
-        fallback=lambda exc: fallback_scorecard(norm, evidence_items, exc),
+        parse=lambda raw: _parse_scorecard(raw, bundle),
+        fallback=lambda exc: fallback_scorecard(norm, bundle, exc),
     )
 
 

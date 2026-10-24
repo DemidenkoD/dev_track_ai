@@ -16,14 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-try:
-    from app.agents.base import ADVISORY_NOTICE, run_with_fallback
-except ImportError:  # harness imports as backend.app.*: fix sys.path first
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-    from app.agents.base import ADVISORY_NOTICE, run_with_fallback
+from app.agents.base import ADVISORY_NOTICE, run_with_fallback
 
 from app.schemas.agent_outputs import (
     GeneratedDevTaskItem,
