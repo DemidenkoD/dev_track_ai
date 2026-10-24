@@ -149,6 +149,11 @@ jobs:
           GF_SECURITY_ADMIN_PASSWORD=dummy-validation-only \
           docker compose -f docker-compose.prod.yml config --quiet
       - name: Build images
+        env:
+          POSTGRES_PASSWORD: dummy-validation-only
+          DATABASE_URL: postgresql+psycopg://dummy:dummy@db:5432/dummy
+          SECRET_KEY: dummy-validation-only
+          GF_SECURITY_ADMIN_PASSWORD: dummy-validation-only
         run: |
           docker compose -f docker-compose.prod.yml build backend worker frontend
           docker compose -f docker-compose.prod.yml images || true
@@ -202,7 +207,12 @@ jobs:
           GF_SECURITY_ADMIN_PASSWORD=dummy-validation-only \
           docker compose -f docker-compose.prod.yml config --quiet
       - name: Build production images
-        run: docker compose -f docker-compose.prod.yml build backend worker frontend nginx
+        env:
+          POSTGRES_PASSWORD: dummy-validation-only
+          DATABASE_URL: postgresql+psycopg://dummy:dummy@db:5432/dummy
+          SECRET_KEY: dummy-validation-only
+          GF_SECURITY_ADMIN_PASSWORD: dummy-validation-only
+        run: docker compose -f docker-compose.prod.yml build backend worker frontend
       - name: Deploy to production
         env:
           SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
