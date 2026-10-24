@@ -49,6 +49,16 @@ if not _driver_available(DATABASE_URL):
         DATABASE_URL.split("@")[-1],
     )
     DATABASE_URL = "sqlite:///./devtrack_ai.db"
+elif DATABASE_URL.startswith("postgresql") and "@db:" in DATABASE_URL:
+    import socket
+
+    try:
+        socket.getaddrinfo("db", 5432)
+    except OSError:
+        logger.warning(
+            "Docker host 'db' not resolvable outside container; falling back to local SQLite"
+        )
+        DATABASE_URL = "sqlite:///./devtrack_ai.db"
 
 engine = create_engine(
     DATABASE_URL,

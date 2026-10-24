@@ -85,3 +85,72 @@ def client(fastapi_app):
 def auth_headers() -> dict:
     """Placeholder Bearer header factory (no real secrets minted here)."""
     return {"Authorization": "Bearer test-token-track5-stub"}
+
+
+@pytest.fixture()
+def isolated_client():
+    """Function-scoped TestClient over throwaway SQLite + seeded rubric."""
+    try:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+    except ImportError as exc:
+        pytest.skip(f"SQLAlchemy unavailable: {exc}")
+
+    try:
+        from app.core.deps import get_current_user, get_db
+        from app.db.base import Base
+        from app.db.init_db import seed_builtin_rubric
+        from app.main import app
+        from app.schemas.api_contracts import UserProfileSchema
+    except Exception as exc:
+        pytest.skip(f"Track 1 backend unavailable: {type(exc).__name__}: {exc}")
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    seed_db = TestingSession()
+    try:
+        seed_builtin_rubric(seed_db)
+    finally:
+        seed_db.close()
+
+    def _override_db():
+        db = TestingSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def _override_user():
+        return UserProfileSchema(username="reviewer@datatalks.club", role="reviewer")
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_current_user] = _override_user
+
+    try:
+        from app.api.v1.endpoints import analyses as analyses_mod
+
+        analyses_mod.EPHEMERAL_NOTIFICATIONS.clear()
+    except Exception:
+        pass
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        yield client, TestingSession
+    finally:
+        app.dependency_overrides.clear()
+        try:
+            from app.api.v1.endpoints import analyses as analyses_mod
+
+            analyses_mod.EPHEMERAL_NOTIFICATIONS.clear()
+        except Exception:
+            pass
+

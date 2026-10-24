@@ -251,6 +251,22 @@ def process_single_run(
                 session.rollback()
         logger.warning("Analysis run failed (%s).", type(exc).__name__)
         ok = False
+    try:
+        from app.core.telemetry import record_analysis_run_outcome, start_correlated_span
+
+        with start_correlated_span(
+            "worker.process_single_run",
+            attributes={"analysis_run.id": str(run_id), "analysis_run.ok": str(ok)},
+        ) as trace_id:
+            record_analysis_run_outcome(ok)
+            logger.info(
+                "worker_run_finished analysis_run_id=%s status=%s trace_id=%s",
+                run_id,
+                "completed" if ok else "failed",
+                trace_id,
+            )
+    except Exception:
+        pass
     # Ephemeral notification: purged on success AND failure; never logged.
     # Missing entry (no address queued via queue_notification) is a safe no-op.
     try:

@@ -107,6 +107,15 @@ def trigger_analysis(
                 status_code=400,
                 detail="acknowledge_ephemeral_email must be true when notify_email_once is provided",
             )
+    from app.core.telemetry import get_current_trace_id, logger as telemetry_logger
+
+    telemetry_logger.info(
+        "analysis_run_queued analysis_run_id=%s project_id=%s ephemeral_notification_queued=%s trace_id=%s",
+        run.id,
+        project.id,
+        notified,
+        get_current_trace_id(),
+    )
     return _to_schema(run, notified=notified)
 
 

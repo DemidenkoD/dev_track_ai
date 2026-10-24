@@ -21,6 +21,29 @@ Per Product Specification §3, DevTrack AI uses a single predefined account (no 
 
 ---
 
+## Single-Command Startup & Testing
+
+### 1. Start the Full Stack Locally (Single Command)
+
+```bash
+make up
+# or: docker compose up --build -d
+```
+
+- **Frontend UI:** `http://localhost:5173`
+- **Backend OpenAPI Docs:** `http://localhost:8000/docs`
+- **Health Endpoint:** `http://localhost:8000/api/v1/health`
+- **Prometheus Metrics & Alerts:** `http://localhost:9090/alerts`
+- **Grafana Dashboards:** `http://localhost:3000` (pre-provisioned `DevTrack AI — User-Impact Overview` dashboard correlating Prometheus metrics, Loki logs, and Tempo traces via `trace_id`)
+
+### 2. Run Automated Tests (Single Command)
+
+```bash
+pytest && npm --prefix frontend run typecheck && (cd frontend && npx playwright test)
+```
+
+---
+
 ## Repository & Multi-Agent Architecture
 
 > **Spec:** [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) v0.3

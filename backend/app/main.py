@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
+from app.core.telemetry import instrument_app
 from app.db.init_db import init_db
 
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     application.include_router(api_router)
+    instrument_app(application)
 
     @application.get("/", tags=["health"])
     def root() -> dict:

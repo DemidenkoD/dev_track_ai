@@ -525,3 +525,25 @@ def scorecard_to_dicts(output: ScorecardEvaluationOutput) -> list[dict[str, Any]
 
 def extraction_to_json(output: ExtractedRubricOutput) -> str:
     return json.dumps(output.model_dump(), indent=2)
+
+
+class RubricAnalyst:
+    """Protocol-compliant wrapper around :func:`extract_rubric` and :func:`evaluate_scorecard`."""
+
+    def extract_rubric(
+        self,
+        raw_content: str | None,
+        source_url: str | None = None,
+        title: str = "Custom Course Rubric",
+        course_name: str = "Custom Course",
+        source_type: str = "text",
+    ) -> dict[str, Any]:
+        output = extract_rubric(
+            raw_content=raw_content or "",
+            title=title,
+            course_name=course_name,
+            source_type=source_type,
+            source_url=source_url,
+        )
+        return output.model_dump()
+

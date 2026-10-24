@@ -151,3 +151,84 @@ def diagnose_incident(
         parse=_parse,
         fallback=lambda exc: fallback_diagnosis(alert_name, window, context_notes, exc),
     )
+
+
+class OnCallAgent:
+    """Protocol-compliant wrapper around :func:`diagnose_incident`.
+
+    Queries read-only Prometheus/Loki/Tempo HTTP endpoints when reachable and
+    passes the collected telemetry into :func:`diagnose_incident`. Never
+    executes shell commands, database writes, or automated remediation.
+    """
+
+    def __init__(
+        self,
+        prometheus_url: str = "http://prometheus:9090",
+        loki_url: str = "http://loki:3100",
+        tempo_url: str = "http://tempo:3200",
+    ) -> None:
+        self.prometheus_url = prometheus_url.rstrip("/")
+        self.loki_url = loki_url.rstrip("/")
+        self.tempo_url = tempo_url.rstrip("/")
+
+    def _fetch_readonly_telemetry(
+        self, alert_name: str, time_window_minutes: int
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        metrics: list[dict[str, Any]] = []
+        logs: list[dict[str, Any]] = []
+        traces: list[dict[str, Any]] = []
+        try:
+            import httpx
+
+            prom_query = (
+                'sum(rate(http_requests_total{status=~"5.."}[5m]))'
+                if "5xx" in alert_name.lower()
+                else f"increase(analysis_runs_failed_total[{time_window_minutes}m])"
+            )
+            with httpx.Client(timeout=2.0) as client:
+                try:
+                    resp = client.get(
+                        f"{self.prometheus_url}/api/v1/query",
+                        params={"query": prom_query},
+                    )
+                    if resp.status_code == 200:
+                        metrics.append(
+                            {"query": prom_query, "result": resp.text[:400]}
+                        )
+                except Exception:
+                    pass
+                try:
+                    loki_q = '{app=~"backend|worker"} |= "ERROR"'
+                    resp = client.get(
+                        f"{self.loki_url}/loki/api/v1/query_range",
+                        params={"query": loki_q, "limit": 10},
+                    )
+                    if resp.status_code == 200:
+                        logs.append(
+                            {"query": loki_q, "excerpt": resp.text[:400]}
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return metrics, logs, traces
+
+    def diagnose(
+        self,
+        alert_name: str,
+        time_window_minutes: int = 30,
+        context_notes: str | None = None,
+    ) -> dict[str, Any]:
+        metrics, logs, traces = self._fetch_readonly_telemetry(
+            alert_name, time_window_minutes
+        )
+        output = diagnose_incident(
+            alert_name=alert_name,
+            time_window_minutes=time_window_minutes,
+            context_notes=context_notes,
+            metric_queries=metrics or None,
+            log_streams=logs or None,
+            trace_summaries=traces or None,
+        )
+        return output.model_dump()
+
