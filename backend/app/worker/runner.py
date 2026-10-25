@@ -13,10 +13,23 @@ Each claimed run executes :func:`process_single_run`, which orchestrates
 the deterministic pipeline (GitHub → diary → security → deployment) and
 sends any staged ephemeral notification (purged immediately afterwards).
 
+Gemini wiring (Track 3 → Track 2):
+    - :func:`process_single_run` auto-resolves a ``score_fn`` via
+      :func:`build_gemini_score_fn` when ``is_gemini_configured()`` is true,
+      delegating to ``app.agents.rubric_analyst.evaluate_scorecard``.
+      All Track 2 imports are lazy (inside functions) so the worker stays
+      import-safe offline without a key or network.
+    - When no key is configured, ``score_fn=None`` is passed through and
+      ``analysis_pipeline`` uses its deterministic 0-point ``needs_review``
+      stub — identical behaviour to before.
+    - Any Track 2 exception degrades to the stub with a WARNING naming only
+      the error class (never secrets).
+
 Public API:
     - :func:`claim_next_queued_run`
     - :func:`schedule_daily_analyses`
     - :func:`process_single_run`
+    - :func:`build_gemini_score_fn`
     - :func:`run_once`
     - :func:`run_forever`
 """
@@ -195,6 +208,165 @@ def _has_pending_run(session: Any, project_id: UUID) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Gemini score_fn wiring (Track 3 → Track 2, lazy imports only)
+# ---------------------------------------------------------------------------
+
+
+def is_gemini_enabled() -> bool:
+    """True when a non-placeholder GEMINI_API_KEY is configured.
+
+    Lazy Track 2 import keeps the worker import-safe offline. Never logs or
+    returns the key itself — boolean only.
+    """
+    try:
+        from app.agents.base import is_gemini_configured  # type: ignore
+    except Exception:
+        return False
+    try:
+        return bool(is_gemini_configured())
+    except Exception:
+        return False
+
+
+def _coerce_json_list(value: Any) -> list[Any]:
+    """Best-effort JSON list coercion (Postgres JSONB vs SQLite TEXT)."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            import json as _json
+
+            parsed = _json.loads(text)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _proposal_to_pipeline_dict(
+    proposal: Any, criteria_by_code: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Convert one Track 2 proposal (model or dict) to pipeline shape.
+
+    Pipeline shape (see ``stub_score_proposals``): ``criterion_code``,
+    ``max_points``, ``ai_proposed_points`` (clamped to ``[0, max_points]``),
+    ``ai_reasoning``, ``ai_confidence`` (clamped to ``[0, 1]``),
+    ``score_state`` (``estimated``/``verified``/``needs_review``),
+    ``missing_for_next_level``, ``evidence_paths``. Never carries
+    ``human_override_*``.
+    """
+    if hasattr(proposal, "model_dump"):
+        try:
+            data = dict(proposal.model_dump())
+        except Exception:
+            data = {}
+    elif isinstance(proposal, dict):
+        data = dict(proposal)
+    else:
+        data = {}
+    code = str(
+        data.get("criterion_code", data.get("code", "unknown")) or "unknown"
+    )
+    fallback_max = int(criteria_by_code.get(code, {}).get("max_points", 0) or 0)
+    try:
+        max_pts = int(data.get("max_points", fallback_max) or fallback_max or 0)
+    except (TypeError, ValueError):
+        max_pts = fallback_max
+    try:
+        proposed = int(data.get("ai_proposed_points", 0) or 0)
+    except (TypeError, ValueError):
+        proposed = 0
+    if max_pts > 0:
+        proposed = max(0, min(proposed, max_pts))
+    else:
+        proposed = max(0, proposed)
+    state = data.get("score_state", "needs_review")
+    state = getattr(state, "value", state)
+    state = str(state or "needs_review").lower()
+    if state not in ("estimated", "verified", "needs_review"):
+        state = "needs_review"
+    try:
+        confidence = float(data.get("ai_confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(confidence, 1.0))
+    paths = data.get("cited_evidence_paths", data.get("evidence_paths", []))
+    if not isinstance(paths, list):
+        paths = _coerce_json_list(paths)
+    return {
+        "criterion_code": code,
+        "max_points": max_pts,
+        "ai_proposed_points": proposed,
+        "ai_reasoning": str(data.get("ai_reasoning", "") or ""),
+        "ai_confidence": confidence,
+        "score_state": state,
+        "missing_for_next_level": data.get("missing_for_next_level"),
+        "evidence_paths": [str(p) for p in paths[:5]],
+    }
+
+
+def build_gemini_score_fn() -> Callable[..., list[dict[str, Any]]]:
+    """Build a pipeline ``score_fn`` delegating to Track 2 Rubric Analyst.
+
+    The returned callable has signature ``(criteria, evidence) -> proposals``
+    matching :func:`analysis_pipeline.stub_score_proposals`. Track 2 imports
+    happen lazily inside the wrapper so module import never requires a key,
+    the SDK, or the network. Any exception (including
+    ``GeminiUnavailableError``) falls back to the deterministic stub and logs
+    a WARNING with the error class name only.
+    """
+
+    def _gemini_score_fn(
+        criteria: Any, evidence: Any
+    ) -> list[dict[str, Any]]:
+        try:
+            from app.agents import rubric_analyst  # type: ignore  # lazy Track 2
+        except Exception as exc:
+            logger.warning(
+                "Gemini scoring unavailable, using stub (%s).",
+                type(exc).__name__,
+            )
+            from app.services.analysis_pipeline import stub_score_proposals
+
+            return stub_score_proposals(criteria, evidence)
+        try:
+            output = rubric_analyst.evaluate_scorecard(
+                criteria=criteria,
+                evidence_items=list(evidence or []),
+            )
+            proposals = getattr(output, "criteria_evaluations", None)
+            if proposals is None:
+                raise ValueError("Track 2 scorecard missing criteria_evaluations")
+            by_code = {
+                str(c.get("code")): c
+                for c in (criteria or [])
+                if isinstance(c, dict) and c.get("code")
+            }
+            converted = [
+                _proposal_to_pipeline_dict(p, by_code) for p in proposals
+            ]
+            if not converted:
+                raise ValueError("Track 2 scorecard returned no proposals")
+            return converted
+        except Exception as exc:
+            logger.warning(
+                "Gemini scoring fallback to stub (%s).", type(exc).__name__
+            )
+            from app.services.analysis_pipeline import stub_score_proposals
+
+            return stub_score_proposals(criteria, evidence)
+
+    return _gemini_score_fn
+
+
+# ---------------------------------------------------------------------------
 # Run execution
 # ---------------------------------------------------------------------------
 
@@ -217,6 +389,14 @@ def process_single_run(
         return False
     project = _get_project(session, getattr(run, "project_id"))
     previous_sha = getattr(run, "previous_commit_sha", None)
+    gemini_enabled = is_gemini_enabled()
+    # Boolean only — never log the key itself.
+    logger.info(
+        "worker scoring path gemini_enabled=%s run_id=%s",
+        "true" if gemini_enabled else "false",
+        run_id,
+    )
+    score_fn = build_gemini_score_fn() if gemini_enabled else None
     try:
         result = run_analysis_stages(
             github_repo_url=getattr(project, "github_repo_url", ""),
@@ -225,6 +405,7 @@ def process_single_run(
             dev_statuses=_dev_statuses(session, getattr(run, "project_id")),
             criteria=_project_criteria(session, project),
             previous_commit_sha=previous_sha,
+            score_fn=score_fn,
         )
         persist_pipeline_result(
             session, analysis_run_id=run_id, project_id=getattr(run, "project_id"), result=result
@@ -303,11 +484,59 @@ def _dev_statuses(session: Any, project_id: Any) -> list[str]:
 
 
 def _project_criteria(session: Any, project: Any) -> list[dict[str, Any]]:
-    """Load rubric criteria dicts for the scorer (empty → stub proposals)."""
+    """Load rubric criteria dicts for the scorer (enriched for Track 2).
+
+    Returns ``{code, name, description, display_order, max_points,
+    scoring_levels, required_evidence_types}`` dicts so the Gemini Rubric
+    Analyst can evaluate against exact official scoring levels. Falls back
+    to minimal ``{code, max_points}`` dicts (stub-compatible) when the
+    enriched query fails. Handles Postgres JSONB and SQLite TEXT storage.
+    """
     if project is None:
         return []
     from sqlalchemy import text
 
+    try:
+        rubric_id = getattr(project, "rubric_id")
+        rows = session.execute(
+            text(
+                "SELECT code, name, description, display_order, max_points, "
+                "scoring_levels, required_evidence_types "
+                "FROM rubric_criteria "
+                "WHERE rubric_id = :rid ORDER BY display_order"
+            ),
+            {"rid": str(rubric_id)},
+        ).all()
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                (
+                    code,
+                    name,
+                    description,
+                    display_order,
+                    max_pts,
+                    scoring_levels,
+                    required_types,
+                ) = tuple(row)[:7]
+            except (TypeError, ValueError):
+                continue
+            enriched.append(
+                {
+                    "code": str(code),
+                    "name": str(name or code),
+                    "description": str(description or ""),
+                    "display_order": int(display_order or 0),
+                    "max_points": int(max_pts or 0),
+                    "scoring_levels": _coerce_json_list(scoring_levels),
+                    "required_evidence_types": _coerce_json_list(required_types),
+                }
+            )
+        if enriched:
+            return enriched
+    except Exception:
+        pass
+    # Minimal fallback (stub-compatible): code + max_points only.
     try:
         rubric_id = getattr(project, "rubric_id")
         rows = session.execute(

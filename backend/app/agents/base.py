@@ -29,38 +29,76 @@ logger = logging.getLogger(__name__)
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
 # Canonical import: `backend/` is on PYTHONPATH (see backend/tests/conftest.py).
-# Track 1 settings are optional — agents work offline without them.
-try:  # pragma: no cover - import alias resolution
-    from app.core.config import settings as _app_settings  # type: ignore
-except Exception:  # Track 1 core may not exist yet (greenfield)
-    _app_settings = None
+# Track 1 exposes settings via `get_settings()` (no module-level `settings`
+# object exists) — resolve lazily so agents work offline without core, and
+# always fall back to `os.environ`. Never import secret values at module scope.
+def _get_app_settings() -> Any | None:
+    """Return Track 1 settings or None (offline/CI-safe, never raises)."""
+    try:
+        from app.core.config import get_settings  # type: ignore
+
+        return get_settings()
+    except Exception:
+        return None
+
+
+# Once-per-process warning dedupe so a 12-criterion scorecard emits one
+# WARNING instead of twelve. Keys: "missing_key" vs "transport_error".
+_FALLBACK_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, msg: str, *args: Any) -> None:
+    """Emit a WARNING log at most once per process for the given key."""
+    if key in _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED.add(key)
+    logger.warning(msg, *args)
+
+
+def reset_fallback_warnings_for_tests() -> None:
+    """Clear once-per-process warning state (tests only)."""
+    _FALLBACK_WARNED.clear()
 
 
 def get_gemini_model() -> str:
     """Return configured Gemini model name with safe default."""
-    if _app_settings is not None:
-        model = getattr(_app_settings, "GEMINI_MODEL", None)
-        if model:
-            return str(model)
+    try:
+        app_settings = _get_app_settings()
+        if app_settings is not None:
+            model = getattr(app_settings, "GEMINI_MODEL", None)
+            if model:
+                return str(model)
+    except Exception:
+        pass
     return os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
 
 
 def get_gemini_api_key() -> str | None:
     """Return GEMINI_API_KEY without ever logging its value."""
-    if _app_settings is not None:
-        key = getattr(_app_settings, "GEMINI_API_KEY", None)
-        if key:
-            return str(key)
+    try:
+        app_settings = _get_app_settings()
+        if app_settings is not None:
+            key = getattr(app_settings, "GEMINI_API_KEY", None)
+            if key:
+                return str(key)
+    except Exception:
+        pass
     return os.environ.get("GEMINI_API_KEY")
 
 
 def is_gemini_configured() -> bool:
-    """True only when a non-placeholder API key is present."""
+    """True only when a non-placeholder API key is present.
+
+    Placeholder set mirrors ``.env.example``
+    (``GEMINI_API_KEY=your_gemini_api_key_here``) plus common dev/test
+    stand-ins. Comparison is case-insensitive on the stripped value; the
+    key itself is never logged.
+    """
     key = get_gemini_api_key()
     if not key:
         return False
     lowered = key.strip().lower()
-    if lowered in {"", "your_gemini_api_key_here", "change-me", "test", "dummy"}:
+    if lowered in {"", "your_gemini_api_key_here", "change-me", "changeme", "test", "dummy", "placeholder"}:
         return False
     return True
 
@@ -177,12 +215,35 @@ def run_with_fallback(
         )
         return parse(raw)
     except GeminiUnavailableError as exc:
-        logger.info("Gemini unavailable (%s); using deterministic fallback.", type(exc).__name__)
+        # Visible-but-safe fallback: WARNING (once per process, not per
+        # criterion) distinguishing missing key vs transport/SDK failure.
+        # Includes the model name only — never key material.
+        if not is_gemini_configured():
+            _warn_once(
+                "missing_key",
+                "Gemini unavailable (GEMINI_API_KEY missing or placeholder); "
+                "using deterministic fallback (model=%s). "
+                "Set a valid GEMINI_API_KEY to enable live scoring; "
+                "fallback proposals use score_state=needs_review.",
+                get_gemini_model(),
+            )
+        else:
+            _warn_once(
+                "transport_error",
+                "Gemini request unavailable (%s); using deterministic "
+                "fallback (model=%s). Fallback proposals use "
+                "score_state=needs_review.",
+                type(exc.__cause__ or exc).__name__,
+                get_gemini_model(),
+            )
         return fallback(exc)
     except Exception as exc:  # validation or unexpected error -> safe fallback
-        logger.warning(
-            "Agent structured-output parse failed (%s); using fallback.",
+        _warn_once(
+            "parse_error",
+            "Agent structured-output parse failed (%s); using fallback "
+            "(model=%s).",
             type(exc).__name__,
+            get_gemini_model(),
         )
         return fallback(exc)
 

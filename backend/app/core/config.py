@@ -7,13 +7,75 @@ ADMIN_PASSWORD) must never be printed, logged, or committed.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Placeholder Gemini keys are never treated as configured (mirrors
+# backend/app/agents/base.py::is_gemini_configured + .env.example).
+# Comparison is case-insensitive on the stripped value; the raw key value
+# itself is never logged, printed, or included in errors/traces.
+_PLACEHOLDER_GEMINI_KEYS: frozenset[str] = frozenset(
+    {
+        "",
+        "your_gemini_api_key_here",
+        "change-me",
+        "changeme",
+        "test",
+        "dummy",
+        "placeholder",
+    }
+)
+
+
+def is_placeholder_gemini_key(value: str | None) -> bool:
+    """True when the value is empty or a well-known dev/test placeholder."""
+    if not value:
+        return True
+    return value.strip().lower() in _PLACEHOLDER_GEMINI_KEYS
+
+
+def _resolve_env_files() -> list[str]:
+    """Ordered dotenv search covering local and Docker runtimes.
+
+    - Local ``pytest`` / ``uvicorn`` runs from the repo root rely on
+      ``<repo>/.env`` (CWD may be repo root or ``backend/``).
+    - Docker Compose sets ``WORKDIR /code`` with ``env_file: .env``
+      resolving to ``/code/.env`` (usually absent) while secrets arrive
+      via ``environment:`` — real env vars always win over dotenv files
+      in pydantic-settings, so listing extra paths is safe.
+
+    Missing files are ignored by pydantic-settings; later files override
+    earlier ones, real process environment overrides all of them.
+    """
+    here = Path(__file__).resolve()
+    try:
+        backend_dir = here.parents[2]  # .../backend
+        repo_root = here.parents[3]  # repo root containing docs/, backend/
+    except IndexError:  # pragma: no cover - extremely shallow checkout
+        backend_dir = here.parent
+        repo_root = here.parent
+    candidates: list[Path] = [
+        Path("/code/.env"),
+        backend_dir / ".env",
+        repo_root / ".env",
+        Path.cwd() / ".env",
+        Path(".env"),
+    ]
+    seen: set[str] = set()
+    resolved: list[str] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            resolved.append(key)
+    return resolved
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_resolve_env_files(), extra="ignore")
 
     # --- Application ---
     APP_ENV: str = "development"
@@ -63,6 +125,11 @@ class Settings(BaseSettings):
         return self.ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
     @property
+    def gemini_configured(self) -> bool:
+        """Boolean-only Gemini signal (never exposes the key value)."""
+        return not is_placeholder_gemini_key(self.GEMINI_API_KEY)
+
+    @property
     def cors_origins_list(self) -> list[str]:
         if self.CORS_ORIGINS.strip() == "*":
             return ["*"]
@@ -88,3 +155,11 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# Canonical singleton for Track 2 runtime agents:
+# ``from app.core.config import settings`` always works (e.g. Docker
+# WORKDIR=/code, local pytest from repo root, uvicorn from backend/).
+# Backwards compatible: ``get_settings()`` remains the canonical accessor
+# and returns this same cached instance. Never logs secret values.
+settings = get_settings()

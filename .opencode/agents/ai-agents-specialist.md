@@ -14,6 +14,12 @@ permission:
   bash:
     "*": ask
     "pytest*": allow
+    "python*": allow
+    "python3*": allow
+    "echo*": allow
+    "ls*": allow
+    "cat*": allow
+    "pwd*": allow
     "git status*": allow
     "git diff*": allow
     "git log*": allow

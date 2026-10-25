@@ -14,6 +14,12 @@ permission:
     "backend/**": deny
   bash:
     "*": ask
+    "python*": allow
+    "python3*": allow
+    "echo*": allow
+    "ls*": allow
+    "cat*": allow
+    "pwd*": allow
     "npm run typecheck": allow
     "npm run build": allow
     "npm run dev*": allow

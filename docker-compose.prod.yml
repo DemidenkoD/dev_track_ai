@@ -59,6 +59,15 @@ services:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in production .env}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-reviewer@datatalks.club}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-devtrack-zoomcamp-2026}
+      # Gemini wiring (Track 6): passed through to backend/worker via compose
+      # `environment:` ONLY. backend/Dockerfile WORKDIR is /code so pydantic
+      # env_file=".env" would look at /code/.env (absent in the image); the
+      # container relies on this injection. Intentionally NO `:?` guard here
+      # (unlike SECRET_KEY/DATABASE_URL): the app must boot DEGRADED when the
+      # key is missing/placeholder — is_gemini_configured() is then false and
+      # agents use deterministic fallback (zero Gemini calls, app looks
+      # healthy). Diagnose with `make check-prod-env` / deploy preflight
+      # (boolean + length only, never prints the value).
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -123,6 +132,9 @@ services:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in production .env}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-reviewer@datatalks.club}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-devtrack-zoomcamp-2026}
+      # Same Gemini wiring as backend (see comment above): injection-only, no
+      # `:?` guard so the worker also boots degraded (deterministic fallback)
+      # instead of crash-looping when the key is missing/placeholder.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}

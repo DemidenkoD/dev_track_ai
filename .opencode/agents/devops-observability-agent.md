@@ -13,6 +13,12 @@ permission:
     "Makefile": allow
   bash:
     "*": ask
+    "python*": allow
+    "python3*": allow
+    "echo*": allow
+    "ls*": allow
+    "cat*": allow
+    "pwd*": allow
     "docker compose config": allow
     "docker*": allow
     "make*": allow

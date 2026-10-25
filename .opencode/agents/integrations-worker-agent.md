@@ -18,6 +18,12 @@ permission:
   bash:
     "*": ask
     "pytest*": allow
+    "python*": allow
+    "python3*": allow
+    "echo*": allow
+    "ls*": allow
+    "cat*": allow
+    "pwd*": allow
     "semgrep*": allow
     "gitleaks*": allow
     "bandit*": allow

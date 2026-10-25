@@ -15,8 +15,57 @@ from app.schemas.api_contracts import HealthResponse
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
+class HealthExtendedResponse(HealthResponse):
+    """Health shape plus boolean-only Gemini signal (never leaks the key).
+
+    ``HealthResponse`` itself stays frozen at the 4-key contract shape;
+    this subclass (defined here in Track 1's endpoint module) adds the
+    advisory ``gemini_configured`` / ``gemini_model`` fields for the live
+    probe without mutating the shared contract schema.
+    """
+
+    gemini_configured: bool = False
+    gemini_model: str = "gemini-2.5-flash"
+
+
+_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+_PLACEHOLDER_KEYS = frozenset(
+    {
+        "",
+        "your_gemini_api_key_here",
+        "change-me",
+        "changeme",
+        "test",
+        "dummy",
+        "placeholder",
+    }
+)
+
+
+def _gemini_status() -> tuple[bool, str]:
+    """Return (gemini_configured, gemini_model) without leaking secrets."""
+    try:
+        from app.core.config import get_settings
+
+        app_settings = get_settings()
+        model = str(getattr(app_settings, "GEMINI_MODEL", _DEFAULT_GEMINI_MODEL) or _DEFAULT_GEMINI_MODEL)
+        configured_attr = getattr(app_settings, "gemini_configured", None)
+        if isinstance(configured_attr, bool):
+            return configured_attr, model
+        key = str(getattr(app_settings, "GEMINI_API_KEY", "") or "")
+        return (key.strip().lower() not in _PLACEHOLDER_KEYS, model)
+    except Exception:
+        import os
+
+        model = os.environ.get("GEMINI_MODEL", _DEFAULT_GEMINI_MODEL) or _DEFAULT_GEMINI_MODEL
+        key = os.environ.get("GEMINI_API_KEY", "")
+        if not key or key.strip().lower() in _PLACEHOLDER_KEYS:
+            return False, model
+        return True, model
+
+
+@router.get("/health", response_model=HealthExtendedResponse)
+def health() -> HealthExtendedResponse:
     database = "degraded"
     worker_status = "degraded"
     try:
@@ -45,9 +94,12 @@ def health() -> HealthResponse:
     except Exception:
         database = "degraded"
         worker_status = "degraded"
-    return HealthResponse(
+    gemini_configured, gemini_model = _gemini_status()
+    return HealthExtendedResponse(
         status="ok",
         version="0.3.0",
         database=database,
         worker_status=worker_status,
+        gemini_configured=gemini_configured,
+        gemini_model=gemini_model,
     )

@@ -20,6 +20,13 @@
 #   - production `.env` already filled at VPS_FOLDER/.env with at least:
 #       POSTGRES_PASSWORD / DATABASE_URL / SECRET_KEY / GF_SECURITY_ADMIN_PASSWORD
 #     (docker-compose.prod.yml `:?` guards fail fast if any are missing)
+# - GEMINI NOTE: VPS .env is NEVER overwritten by this workflow (only the two
+#   auto-fills for GF_SECURITY_ADMIN_PASSWORD / placeholder SECRET_KEY above).
+#   If VPS .env still carries the .env.example placeholder
+#   (GEMINI_API_KEY=your_gemini_api_key_here) or an empty value, the deploy
+#   SSH step emits a VISIBLE ::warning:: (boolean + length only, key never
+#   logged) and boots degraded (deterministic fallback, zero Gemini usage).
+#   Fix: infra/RUNBOOK_GEMINI_VPS.md.
 #
 # How to trigger:
 #   - push to `main` (auto), or Actions tab -> "deploy-vps" -> Run workflow.
@@ -165,6 +172,40 @@ jobs:
               sed -i "s/^SECRET_KEY=change-me-in-production-use-64-char-hex.*/SECRET_KEY=$(openssl rand -hex 32)/" .env
               echo "[deploy] replaced placeholder SECRET_KEY in .env with generated key"
             fi
+            # --- Gemini preflight (ADDITIVE, Track 6): loud degraded-mode warning.
+            # Context: VPS .env is often copied from .env.example whose
+            # GEMINI_API_KEY placeholder (your_gemini_api_key_here) makes
+            # is_gemini_configured() false, so agents silently use
+            # deterministic fallback (zero Gemini usage, app looks healthy).
+            # This block NEVER prints the key: boolean + length/count only.
+            # Deploy deliberately does NOT overwrite VPS .env (only the two
+            # auto-fills above); a bad key warns instead of failing the boot.
+            echo "[deploy] Gemini preflight (boolean + length only, value never logged):"
+            GEMINI_LINE="$(grep -E '^GEMINI_API_KEY=' .env 2>/dev/null || true)"
+            GEMINI_VAL="${GEMINI_LINE#GEMINI_API_KEY=}"
+            # Strip surrounding quotes, whitespace, and CR without echoing.
+            GEMINI_VAL="$(printf '%s' "$GEMINI_VAL" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+            case "$GEMINI_VAL" in
+              ""|"your_gemini_api_key_here"|"change-me"|"test"|"dummy")
+                echo "::warning::GEMINI_API_KEY is missing or still the .env.example placeholder (GEMINI_API_KEY_SET=false). Backend + worker will boot DEGRADED and all analyses will use deterministic fallback — expect ZERO usage in the Google AI dashboard while health checks stay green. Remediation runbook: infra/RUNBOOK_GEMINI_VPS.md (set the real key in $VPS_FOLDER/.env, then: docker compose -f docker-compose.prod.yml up -d backend worker). This deploy continues without failing."
+                ;;
+              *)
+                echo "[deploy] GEMINI_API_KEY_SET=true (length ${#GEMINI_VAL}, value never logged). Live Gemini calls expected."
+                ;;
+            esac
+            # --- Required-secrets presence (boolean only, values never logged).
+            if grep -q '^SECRET_KEY=.\+' .env; then
+              echo "[deploy] SECRET_KEY present (value never logged)."
+            else
+              echo "::error::SECRET_KEY missing or empty in VPS .env."
+              exit 1
+            fi
+            if grep -q '^DATABASE_URL=.\+' .env; then
+              echo "[deploy] DATABASE_URL present (value never logged)."
+            else
+              echo "::error::DATABASE_URL missing or empty in VPS .env."
+              exit 1
+            fi
             echo "[deploy] validating prod compose (fails fast if VPS .env :? guards missing):"
             dkr compose -f docker-compose.prod.yml config --quiet || {
               echo "::error::docker compose config failed — check docker daemon permissions or VPS .env variables."
@@ -234,6 +275,31 @@ jobs:
             fi
             echo "[deploy] stack status:"
             dkr compose -f docker-compose.prod.yml ps
+            # --- Post-boot container Gemini check (ADDITIVE, boolean/count only).
+            # Verifies the injected env actually reached the running containers
+            # (compose `environment:` is the only injection path; /code/.env is
+            # absent). Uses `[ -z ... ]` + length/count — never prints the key.
+            echo "[deploy] container Gemini check (boolean + length only):"
+            dkr compose -f docker-compose.prod.yml exec -T backend sh -c '
+              if [ -z "$GEMINI_API_KEY" ]; then
+                echo "::warning::backend container: GEMINI_API_KEY_SET=false (empty in container env). Live analyses will use deterministic fallback."
+              else
+                case "$GEMINI_API_KEY" in
+                  your_gemini_api_key_here|change-me|test|dummy)
+                    echo "::warning::backend container: GEMINI_API_KEY is a placeholder (GEMINI_API_KEY_SET=false). Deterministic fallback active; see infra/RUNBOOK_GEMINI_VPS.md." ;;
+                  *) echo "[deploy] backend container: GEMINI_API_KEY_SET=true (length ${#GEMINI_API_KEY}, value never logged)." ;;
+                esac
+              fi' || echo "::warning::backend container Gemini check could not run yet (container still starting?); see preflight result above."
+            dkr compose -f docker-compose.prod.yml exec -T worker sh -c '
+              if [ -z "$GEMINI_API_KEY" ]; then
+                echo "::warning::worker container: GEMINI_API_KEY_SET=false (empty in container env). Live analyses will use deterministic fallback."
+              else
+                case "$GEMINI_API_KEY" in
+                  your_gemini_api_key_here|change-me|test|dummy)
+                    echo "::warning::worker container: GEMINI_API_KEY is a placeholder (GEMINI_API_KEY_SET=false). Deterministic fallback active; see infra/RUNBOOK_GEMINI_VPS.md." ;;
+                  *) echo "[deploy] worker container: GEMINI_API_KEY_SET=true (length ${#GEMINI_API_KEY}, value never logged)." ;;
+                esac
+              fi' || echo "::warning::worker container Gemini check could not run yet (container still starting?); see preflight result above."
           REMOTE_SCRIPT
 
       - name: Health gate (ct-academia.pl, retried ~60s)

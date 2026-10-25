@@ -15,7 +15,7 @@ PROD_FILE ?= docker-compose.prod.yml
 PROD_CONFIG_ENV ?= POSTGRES_PASSWORD=dummy-validation-only DATABASE_URL=postgresql+psycopg://dummy:dummy@db:5432/dummy SECRET_KEY=dummy-validation-only GF_SECURITY_ADMIN_PASSWORD=dummy-validation-only
 
 .PHONY: up down build logs ps config config-prod test-backend clean
-.PHONY: up-prod down-prod logs-prod ps-prod
+.PHONY: up-prod down-prod logs-prod ps-prod check-prod-env
 
 up: ## Start local stack (single command): db + backend + worker + frontend + observability
 	$(COMPOSE) -f $(DEV_FILE) up --build -d
@@ -51,6 +51,17 @@ config: ## Validate local compose file
 
 config-prod: ## Validate production compose file (dummy secrets satisfy :? guards for validation only)
 	$(PROD_CONFIG_ENV) $(COMPOSE) -f $(PROD_FILE) config --quiet && echo "docker-compose.prod.yml OK"
+
+check-prod-env: ## Preflight VPS/local .env: SECRET_KEY/DATABASE_URL present? GEMINI_API_KEY_SET=true/false (boolean only, values never logged)
+	@ENV_FILE="$${ENV_FILE:-.env}"; \
+	if [ ! -f "$$ENV_FILE" ]; then echo "ERROR: $$ENV_FILE missing — create it from .env.example on the VPS."; exit 1; fi; \
+	if grep -q '^SECRET_KEY=.\+' "$$ENV_FILE"; then echo "SECRET_KEY present (value never logged)."; else echo "ERROR: SECRET_KEY missing or empty in $$ENV_FILE."; exit 1; fi; \
+	if grep -q '^DATABASE_URL=.\+' "$$ENV_FILE"; then echo "DATABASE_URL present (value never logged)."; else echo "ERROR: DATABASE_URL missing or empty in $$ENV_FILE."; exit 1; fi; \
+	if grep -Eq '^GEMINI_API_KEY=(your_gemini_api_key_here|change-me|test|dummy|""|"")?[[:space:]]*$$' "$$ENV_FILE"; then \
+	  echo "WARNING: GEMINI_API_KEY_SET=false (missing or .env.example placeholder) — backend/worker will boot DEGRADED with deterministic fallback (zero Gemini usage, health stays green). See infra/RUNBOOK_GEMINI_VPS.md."; \
+	else \
+	  echo "GEMINI_API_KEY_SET=true (non-placeholder value present, content not shown)."; \
+	fi
 
 test-backend: ## Run backend pytest inside a throwaway container (Track 5 owns test content; tests/ bind-mounted because the image excludes them)
 	$(COMPOSE) -f $(DEV_FILE) run --rm -v ./backend/tests:/code/tests:ro backend python -m pytest -q

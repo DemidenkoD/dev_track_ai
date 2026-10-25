@@ -59,6 +59,9 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://devtrack:devtrack_secret@db:5432/devtrack_ai}
+      # Gemini wiring: compose `environment:` injection only (no `:?` guard so
+      # local boot never fails). Empty/placeholder key => deterministic
+      # fallback, zero Gemini usage. See docker-compose.prod.yml comment.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-devtrack-ai-backend}
@@ -121,6 +124,8 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://devtrack:devtrack_secret@db:5432/devtrack_ai}
+      # Same Gemini wiring as backend (see comment above): injection-only, no
+      # `:?` guard; worker boots degraded on missing/placeholder key.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-devtrack-ai-worker}

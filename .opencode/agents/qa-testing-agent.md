@@ -12,6 +12,12 @@ permission:
   bash:
     "*": ask
     "pytest*": allow
+    "python*": allow
+    "python3*": allow
+    "echo*": allow
+    "ls*": allow
+    "cat*": allow
+    "pwd*": allow
     "npx playwright*": allow
     "npm run typecheck": allow
     "git status*": allow
