@@ -1,0 +1,7 @@
+# Local-only Postgres host exposure for MCP/tools (Track 6).
+# Merged automatically with docker-compose.yml by `docker compose`.
+# Do NOT add production ports here — prod uses docker-compose.prod.yml.
+services:
+  db:
+    ports:
+      - "5432:5432"

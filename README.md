@@ -46,13 +46,13 @@ pytest && npm --prefix frontend run typecheck && (cd frontend && npx playwright 
 
 ## Repository & Multi-Agent Architecture
 
-> **Spec:** [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) v0.3
+> **Spec:** [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) v0.4
 > **Tracker (public):** https://github.com/users/DemidenkoD/projects/4/views/1 — tasks with acceptance criteria + `Closes #n` evidence.
 
 This repository is structured for **simultaneous multi-agent development** across 6 non-overlapping ownership tracks:
 
 - **Problem Statement:** [docs/PROBLEM_DESCRIPTION.md](docs/PROBLEM_DESCRIPTION.md)
-- **Product Specification v0.3:** [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)
+- **Product Specification v0.4:** [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)
 - **Agent Team & Ownership Matrix:** [docs/specs/AGENT_TEAM_SPEC.md](docs/specs/AGENT_TEAM_SPEC.md)
 - **Database Schema Specification:** [docs/specs/DATABASE_SCHEMA.md](docs/specs/DATABASE_SCHEMA.md)
 - **OpenAPI 3.1 REST Contract:** [docs/specs/API_CONTRACT.md](docs/specs/API_CONTRACT.md)

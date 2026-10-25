@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import type {
   AnalysisRun,
@@ -13,7 +13,23 @@ import { fetchEvidence, ApiError } from '../api/client';
 
 /** Evidence / Diary / Security / Deployment tabs (read-only views). */
 export function EvidencePanel({ items }: { items: EvidenceItem[] }): JSX.Element {
-  if (items.length === 0) return <p className="muted">No evidence collected yet.</p>;
+  if (items.length === 0)
+    return (
+      <div className="card stack" aria-live="polite">
+        <p className="muted">
+          No evidence collected yet for this project/run. The latest analysis completed but the
+          backend returned <code>0 evidence_items</code> — there is nothing to display, not a
+          loading error.
+        </p>
+        <p className="muted small">
+          Evidence supports the advisory AI estimates on the Scorecard tab (<em>Estimated</em>{' '}
+          = AI-only, <em>Verified</em> = human-confirmed, <em>Needs Review</em> = uncertain).
+          Linked per-criterion evidence also appears inside each Scorecard card. Try clearing
+          filters or picking a different analysis run above; if still empty, the root cause is
+          upstream (worker persisted 0 rows), not this view.
+        </p>
+      </div>
+    );
   return (
     <ul className="evidence-list">
       {items.map((ev) => (
@@ -88,6 +104,14 @@ export function EvidenceExplorer({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filtered, setFiltered] = useState(false);
+
+  // Sync with freshly loaded project evidence (ProjectDetailPage fetches
+  // asynchronously). Without this, `useState(initialItems)` freezes the first
+  // empty array and the tab stays empty even after `load()` resolves or the
+  // user picks a different analysis run — a stale-cache false-empty.
+  useEffect(() => {
+    if (!filtered) setItems(initialItems);
+  }, [initialItems, filtered]);
 
   async function handleApply(event: FormEvent): Promise<void> {
     event.preventDefault();

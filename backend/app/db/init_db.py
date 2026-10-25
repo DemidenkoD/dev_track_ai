@@ -177,6 +177,80 @@ def seed_example_project(db: Session) -> None:
     logger.info("Seeded example project %s", EXAMPLE_PROJECT_URL)
 
 
+def normalize_legacy_enum_case(db: Session) -> int:
+    """Lowercase legacy uppercase enum NAMEs left by pre-fix ``SqlEnum``.
+
+    Background (Track 1): ``SqlEnum(X, native_enum=False)`` WITHOUT
+    ``values_callable`` persisted enum NAMES (``QUEUED``/``MANUAL``/``ACTIVE``)
+    as ``VARCHAR``. After the fix (``values_callable=_enum_values`` in
+    ``app/models/models.py``) the ORM only deserialises lowercase wire VALUES
+    (``queued``/``manual``/``active``), so a legacy row raises
+    ``LookupError: 'MANUAL' is not among the defined enum values`` on
+    ``session.get(AnalysisRun, ...)`` and the worker's
+    ``claim_next_queued_run`` falls through to ``None`` even though
+    ``WHERE LOWER(status)='queued'`` still matches at the SQL level.
+
+    This backfill is idempotent (``WHERE col <> LOWER(col)``) and runs on
+    every backend startup via :func:`init_db`. It touches only enum case —
+    never ``ai_proposed_points``/``human_override_*``, never any email
+    (no email column exists). Safe on PostgreSQL and SQLite (``LOWER()``
+    works on ``VARCHAR`` on both; no ``::text`` cast needed because the live
+    column is ``VARCHAR(32)``, not a native PG ``ENUM``).
+    Returns the total rows normalised.
+    """
+    from sqlalchemy import text
+
+    statements = [
+        "UPDATE rubrics SET source_type=LOWER(source_type)"
+        " WHERE source_type<>LOWER(source_type)",
+        "UPDATE projects SET status=LOWER(status) WHERE status<>LOWER(status)",
+        "UPDATE development_milestones SET status=LOWER(status)"
+        " WHERE status<>LOWER(status)",
+        "UPDATE development_milestones SET source=LOWER(source)"
+        " WHERE source<>LOWER(source)",
+        "UPDATE analysis_runs SET status=LOWER(status)"
+        " WHERE status<>LOWER(status)",
+        "UPDATE analysis_runs SET trigger_type=LOWER(trigger_type)"
+        " WHERE trigger_type<>LOWER(trigger_type)",
+        "UPDATE evidence_items SET evidence_type=LOWER(evidence_type)"
+        " WHERE evidence_type<>LOWER(evidence_type)",
+        "UPDATE criterion_assessments SET score_state=LOWER(score_state)"
+        " WHERE score_state<>LOWER(score_state)",
+        "UPDATE security_reports SET overall_status=LOWER(overall_status)"
+        " WHERE overall_status<>LOWER(overall_status)",
+        "UPDATE security_findings SET severity=LOWER(severity)"
+        " WHERE severity<>LOWER(severity)",
+        "UPDATE deployment_checks SET discovery_source=LOWER(discovery_source)"
+        " WHERE discovery_source<>LOWER(discovery_source)",
+        "UPDATE recommendations SET priority=LOWER(priority)"
+        " WHERE priority<>LOWER(priority)",
+        "UPDATE recommendations SET technical_risk=LOWER(technical_risk)"
+        " WHERE technical_risk<>LOWER(technical_risk)",
+    ]
+    total = 0
+    for sql in statements:
+        try:
+            result = db.execute(text(sql))
+            total += int(getattr(result, "rowcount", 0) or 0)
+        except Exception as exc:  # missing table on first boot: skip
+            logger.debug("Enum case normalisation skipped (%s).", type(exc).__name__)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            continue
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    if total:
+        logger.info("Normalised %d legacy uppercase enum value(s) to lowercase", total)
+    return total
+
+
 def init_db() -> None:
     """Create tables and seed the built-in rubric; never raises on failure."""
     try:
@@ -185,6 +259,7 @@ def init_db() -> None:
         Base.metadata.create_all(bind=engine)
         db = SessionLocal()
         try:
+            normalize_legacy_enum_case(db)
             seed_builtin_rubric(db)
             seed_example_project(db)
         finally:

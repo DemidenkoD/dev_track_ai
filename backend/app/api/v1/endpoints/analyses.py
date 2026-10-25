@@ -23,6 +23,7 @@ from app.schemas.api_contracts import (
     TriggerAnalysisRequest,
     UserProfileSchema,
 )
+from app.schemas.enums import AnalysisStatus, AnalysisTriggerType
 from app.services.notification_service import (
     EPHEMERAL_NOTIFICATIONS,
     queue_notification,
@@ -84,8 +85,8 @@ def trigger_analysis(
     )
     run = AnalysisRun(
         project_id=project.id,
-        trigger_type="manual",
-        status="queued",
+        trigger_type=AnalysisTriggerType.MANUAL,
+        status=AnalysisStatus.QUEUED,
         previous_commit_sha=previous.commit_sha if previous else None,
         max_total_points=rubric.max_points if rubric else 24,
     )

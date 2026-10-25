@@ -18,7 +18,26 @@ fallback. (Also note: `backend/Dockerfile` `WORKDIR` is `/code`, so pydantic
 > **Secret safety:** every command below reports **boolean / length / count
 > only**. Never `cat` the `.env`, never `echo $GEMINI_API_KEY`, never
 > `printenv | grep GEMINI` (that prints the value). No real key ever belongs
-> in this repo, in logs, or in traces.
+> in this repo, in logs, or in traces. Same applies to `OPENCODE_API_KEY` /
+> `OPENCODE_KEY` (never `echo $OPENCODE_API_KEY`, never `echo $OPENCODE_KEY`).
+
+> **LLM precedence note (GLM(direct) > OpenCode > Gemini):** `GLM_API_KEY` / `ZAI_API_KEY`
+> alias (`glm-5.3-flash`, `https://api.z.ai/api/paas/v4/`), `OPENCODE_API_KEY` /
+> `OPENCODE_KEY` (either configures opencode) + `OPENCODE_MODEL` model
+> pass-through (`kimi-k2.6` (user example) | `glm-5.3-flash` |
+> `muse-spark-1.3-contributor`) + `OPENCODE_BASE_URL`
+> (default `https://opencode.ai/inference/openai/v1`; OpenAI-compatible
+> inference endpoint, passed through to `backend` + `worker` via compose),
+> and `GEMINI_API_KEY` / `GEMINI_MODEL` (`gemma-4-31b-it`) are templated in
+> `.env.example` (placeholders only, no secrets committed) and passed through
+> to `backend` + `worker` via compose `environment:` in both
+> `docker-compose.yml` and `docker-compose.prod.yml`. **When
+> `LLM_PROVIDER=auto` (default), effective order is GLM(direct) > OPENCODE >
+> GEMINI. `LLM_PROVIDER=opencode` forces gateway (for GLM-via-opencode: set
+> `OPENCODE_MODEL=glm-5.3-flash`, uses `OPENCODE_API_KEY`/`OPENCODE_KEY`,
+> no separate Z.AI key) even if `GLM_*` keys present.** `make check-prod-env`
+> accepts `OPENCODE_API_KEY` as an alias for `OPENCODE_KEY`
+> (boolean check only, values never logged).
 
 ## 1. Diagnose (on the VPS, values never printed)
 

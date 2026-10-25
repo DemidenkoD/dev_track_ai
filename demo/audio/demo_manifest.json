@@ -1,0 +1,65 @@
+[
+  {
+    "scene_id": "scene_01_intro",
+    "title": "Scene 1: Introduction & The Core Problem",
+    "screen_cue": "Landing page / Course dilemma graphic",
+    "audio_file": "scene_01_intro.mp3",
+    "word_count": 58,
+    "estimated_seconds": 24.9,
+    "narration": "Building technical course projects is challenging. Students and developers often ask themselves: Am I truly meeting the rubric requirements? How many points will my project actually get? And what blockers are standing between me and a passing grade? Meet DevTrack AI: your course-first AI project mentor, designed from the ground up for DataTalksClub Zoomcamps and developer capstone projects."
+  },
+  {
+    "scene_id": "scene_02_login_dashboard",
+    "title": "Scene 2: Reviewer Login & Project Dashboard",
+    "screen_cue": "Login screen -> Projects Dashboard",
+    "audio_file": "scene_02_login_dashboard.mp3",
+    "word_count": 44,
+    "estimated_seconds": 18.9,
+    "narration": "Reviewers can log in instantly with pre-seeded credentials. The Project Dashboard immediately surfaces active assignments with clear deadlines, health indicators, and our signature two-dimensional tracking. Unlike naive tools that conflate tasks with grades, DevTrack AI strictly separates Development Completion from your Expected Course Score."
+  },
+  {
+    "scene_id": "scene_03_scorecard",
+    "title": "Scene 3: Official Rubric Scorecard & Safety Invariants",
+    "screen_cue": "Project Detail -> Rubric Scorecard Panel",
+    "audio_file": "scene_03_scorecard.mp3",
+    "word_count": 65,
+    "estimated_seconds": 27.9,
+    "narration": "Inside the project, we see the official AI Dev Tools Zoomcamp 2026 scorecard, spanning twelve criteria and twenty-four maximum points with a ten-point passing threshold. Notice the strict safety invariant: every score is explicitly tagged as Estimated, Verified, or Needs Review. DevTrack AI never masquerades AI guesses as official grades, and when a human reviewer overrides a score, the original AI reasoning remains fully preserved."
+  },
+  {
+    "scene_id": "scene_04_analysis_pipeline",
+    "title": "Scene 4: Triggering Multi-Agent Analysis & Security Scans",
+    "screen_cue": "Trigger Analysis Modal -> Live Scanning Progress",
+    "audio_file": "scene_04_analysis_pipeline.mp3",
+    "word_count": 51,
+    "estimated_seconds": 21.9,
+    "narration": "When we trigger an analysis, background worker agents inspect the public GitHub repository, parse the development diary, and verify live deployments with SSRF protection. Crucially, we never execute untrusted code. Instead, deterministic scanners like Semgrep, Gitleaks, and Bandit run in isolated sandboxes, feeding structured evidence directly to Gemini for rubric matching."
+  },
+  {
+    "scene_id": "scene_05_mentor_milestones",
+    "title": "Scene 5: AI Mentor Chat & Actionable Milestones",
+    "screen_cue": "Mentor Chat Panel & Milestones View",
+    "audio_file": "scene_05_mentor_milestones.mp3",
+    "word_count": 55,
+    "estimated_seconds": 23.6,
+    "narration": "Need to know what to build next? The AI Mentor acts as a personal tutor. Asking 'What is preventing me from reaching twenty points?' produces evidence-backed guidance tied directly to your repository commits and missing rubric deliverables. Milestones are split into official course milestones and practical development subtasks, keeping your engineering plan organized and focused."
+  },
+  {
+    "scene_id": "scene_06_observability_oncall",
+    "title": "Scene 6: Phase 4 On-Call Diagnostics & Observability",
+    "screen_cue": "On-Call Page & Grafana Dashboard",
+    "audio_file": "scene_06_observability_oncall.mp3",
+    "word_count": 45,
+    "estimated_seconds": 19.3,
+    "narration": "DevTrack AI doesn't stop at code evaluation. With Phase Four Observability, pre-configured Grafana dashboards correlate Prometheus metrics, Loki logs, and Tempo distributed traces via unique trace IDs. Our read-only On-Call Diagnostic Agent can investigate alerts and diagnose system incidents in seconds without mutating production state."
+  },
+  {
+    "scene_id": "scene_07_architecture_closing",
+    "title": "Scene 7: Architecture, Single-Command Setup & Wrap-Up",
+    "screen_cue": "VS Code repository overview / make up terminal output",
+    "audio_file": "scene_07_architecture_closing.mp3",
+    "word_count": 41,
+    "estimated_seconds": 17.6,
+    "narration": "Under the hood, DevTrack AI was built using a six-track parallel multi-agent architecture, comprehensive test coverage, and a single-command Docker Compose startup. DevTrack AI: bridging the gap between project idea and a verified, secure, and successful deployment. Thank you for watching!"
+  }
+]

@@ -9,6 +9,7 @@ import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { RubricsPage } from './pages/RubricsPage';
 import { RubricDetailPage } from './pages/RubricDetailPage';
 import { OnCallPage } from './pages/OnCallPage';
+import { DemoTour } from './components/DemoTour';
 
 function ThemeToggle(): JSX.Element {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -37,7 +38,7 @@ function ThemeToggle(): JSX.Element {
   );
 }
 
-function NavBar(): JSX.Element {
+function NavBar({ onStartTour }: { onStartTour: () => void }): JSX.Element {
   const { isAuthenticated, user, logout } = useAuth();
   const navigate = useNavigate();
   return (
@@ -55,6 +56,14 @@ function NavBar(): JSX.Element {
         )}
       </nav>
       <div className="nav-right">
+        <button
+          className="btn btn-demo"
+          onClick={onStartTour}
+          data-testid="start-demo-btn"
+          title="Launch guided interactive demo tour with ElevenLabs voiceover"
+        >
+          🎬 Guided Demo
+        </button>
         <ThemeToggle />
         {isAuthenticated ? (
           <>
@@ -86,10 +95,22 @@ function RootRedirect(): JSX.Element {
 }
 
 export function App(): JSX.Element {
+  const [demoOpen, setDemoOpen] = useState(() => {
+    try {
+      return (
+        window.sessionStorage.getItem('devtrack.demo_mode') === 'true' ||
+        new URLSearchParams(window.location.search).get('demo') === 'true'
+      );
+    } catch {
+      return false;
+    }
+  });
+
   return (
     <AuthProvider>
       <div className="app-shell">
-        <NavBar />
+        <NavBar onStartTour={() => setDemoOpen(true)} />
+        <DemoTour isOpen={demoOpen} onClose={() => setDemoOpen(false)} />
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<LoginPage />} />

@@ -5,8 +5,9 @@ development_milestones, analysis_runs, evidence_items, criterion_assessments,
 diary_snapshots, security_reports, security_findings, deployment_checks,
 recommendations (13 tables).
 
-Portability: UUID PKs via sqlalchemy.Uuid, enums with native_enum=False,
-JSON columns via sqlalchemy.JSON (JSONB on PostgreSQL, TEXT on SQLite).
+Portability: UUID PKs via sqlalchemy.Uuid, enums with native_enum=False
++ values_callable storing lowercase wire VALUES (not NAMES), JSON columns
+via sqlalchemy.JSON (JSONB on PostgreSQL, TEXT on SQLite).
 
 INVARIANTS (backend/AGENTS.md §2):
 - Zero persistent email storage: NO email column exists on any model.
@@ -58,6 +59,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _enum_values(enum_cls):
+    """Return lowercase wire VALUES for ``SqlEnum`` VARCHAR storage.
+
+    Root cause: ``SqlEnum(X, native_enum=False)`` without ``values_callable``
+    persists enum NAMES (``QUEUED``) as VARCHAR, while the worker's raw SQL
+    and the API contract use lowercase values (``queued``). Passing
+    ``values_callable=_enum_values`` forces value storage on every enum
+    column so ORM writes and raw-SQL readers agree.
+
+    Backfill for pre-fix rows (PostgreSQL):
+    ``UPDATE analysis_runs SET status=LOWER(status),
+    trigger_type=LOWER(trigger_type);``
+    (apply the same LOWER() pattern to any other enum VARCHAR column that
+    already holds uppercase NAMES).
+    """
+    return [m.value for m in enum_cls]
+
+
 # ---------------------------------------------------------------------------
 # 3.1 rubrics (immutable once versioned: updates create a NEW row/version)
 # ---------------------------------------------------------------------------
@@ -69,7 +88,7 @@ class Rubric(Base):
     title: Mapped[str] = mapped_column(String(255))
     course_name: Mapped[str] = mapped_column(String(255))
     source_type: Mapped[RubricSourceType] = mapped_column(
-        SqlEnum(RubricSourceType, native_enum=False, length=32)
+        SqlEnum(RubricSourceType, native_enum=False, length=32, values_callable=_enum_values)
     )
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     raw_content: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -128,7 +147,7 @@ class Project(Base):
     course_name: Mapped[str] = mapped_column(String(255))
     rubric_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("rubrics.id"))
     status: Mapped[ProjectStatus] = mapped_column(
-        SqlEnum(ProjectStatus, native_enum=False, length=32),
+        SqlEnum(ProjectStatus, native_enum=False, length=32, values_callable=_enum_values),
         default=ProjectStatus.ACTIVE,
     )
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -213,11 +232,11 @@ class DevelopmentMilestone(Base):
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[DevelopmentMilestoneStatus] = mapped_column(
-        SqlEnum(DevelopmentMilestoneStatus, native_enum=False, length=32),
+        SqlEnum(DevelopmentMilestoneStatus, native_enum=False, length=32, values_callable=_enum_values),
         default=DevelopmentMilestoneStatus.OUTSTANDING,
     )
     source: Mapped[MilestoneSource] = mapped_column(
-        SqlEnum(MilestoneSource, native_enum=False, length=32),
+        SqlEnum(MilestoneSource, native_enum=False, length=32, values_callable=_enum_values),
         default=MilestoneSource.AI_GENERATED,
     )
     is_approved: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -246,11 +265,11 @@ class AnalysisRun(Base):
         Uuid, ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
     trigger_type: Mapped[AnalysisTriggerType] = mapped_column(
-        SqlEnum(AnalysisTriggerType, native_enum=False, length=32),
+        SqlEnum(AnalysisTriggerType, native_enum=False, length=32, values_callable=_enum_values),
         default=AnalysisTriggerType.MANUAL,
     )
     status: Mapped[AnalysisStatus] = mapped_column(
-        SqlEnum(AnalysisStatus, native_enum=False, length=32),
+        SqlEnum(AnalysisStatus, native_enum=False, length=32, values_callable=_enum_values),
         default=AnalysisStatus.QUEUED,
     )
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -315,7 +334,7 @@ class EvidenceItem(Base):
         Uuid, ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
     evidence_type: Mapped[EvidenceType] = mapped_column(
-        SqlEnum(EvidenceType, native_enum=False, length=32)
+        SqlEnum(EvidenceType, native_enum=False, length=32, values_callable=_enum_values)
     )
     title: Mapped[str] = mapped_column(String(255))
     path_or_url: Mapped[str] = mapped_column(String(1024))
@@ -353,7 +372,7 @@ class CriterionAssessment(Base):
     ai_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     missing_for_next_level: Mapped[str | None] = mapped_column(Text, nullable=True)
     score_state: Mapped[ScoreState] = mapped_column(
-        SqlEnum(ScoreState, native_enum=False, length=32),
+        SqlEnum(ScoreState, native_enum=False, length=32, values_callable=_enum_values),
         default=ScoreState.ESTIMATED,
     )
     human_override_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -422,7 +441,7 @@ class SecurityReport(Base):
     )
     commit_sha: Mapped[str] = mapped_column(String(64))
     overall_status: Mapped[SecurityStatus] = mapped_column(
-        SqlEnum(SecurityStatus, native_enum=False, length=32),
+        SqlEnum(SecurityStatus, native_enum=False, length=32, values_callable=_enum_values),
         default=SecurityStatus.WARNING,
     )
     scanners_executed: Mapped[list] = mapped_column(JSON, default=list)
@@ -451,7 +470,7 @@ class SecurityFinding(Base):
     scanner: Mapped[str] = mapped_column(String(64))
     rule_id: Mapped[str] = mapped_column(String(255))
     severity: Mapped[SeverityLevel] = mapped_column(
-        SqlEnum(SeverityLevel, native_enum=False, length=32),
+        SqlEnum(SeverityLevel, native_enum=False, length=32, values_callable=_enum_values),
         default=SeverityLevel.INFO,
     )
     file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -480,7 +499,7 @@ class DeploymentCheck(Base):
     )
     target_url: Mapped[str] = mapped_column(String(512))
     discovery_source: Mapped[DeploymentDiscoverySource] = mapped_column(
-        SqlEnum(DeploymentDiscoverySource, native_enum=False, length=32),
+        SqlEnum(DeploymentDiscoverySource, native_enum=False, length=32, values_callable=_enum_values),
         default=DeploymentDiscoverySource.MANUAL,
     )
     is_reachable: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -515,12 +534,12 @@ class Recommendation(Base):
     related_criterion_code: Mapped[str] = mapped_column(String(100))
     potential_points_delta: Mapped[int] = mapped_column(Integer, default=0)
     priority: Mapped[PriorityLevel] = mapped_column(
-        SqlEnum(PriorityLevel, native_enum=False, length=32),
+        SqlEnum(PriorityLevel, native_enum=False, length=32, values_callable=_enum_values),
         default=PriorityLevel.MEDIUM,
     )
     estimated_effort_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
     technical_risk: Mapped[RiskLevel] = mapped_column(
-        SqlEnum(RiskLevel, native_enum=False, length=32),
+        SqlEnum(RiskLevel, native_enum=False, length=32, values_callable=_enum_values),
         default=RiskLevel.LOW,
     )
     supporting_evidence_ids: Mapped[list] = mapped_column(JSON, default=list)

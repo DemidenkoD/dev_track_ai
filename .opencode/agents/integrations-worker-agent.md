@@ -21,8 +21,14 @@ permission:
     "python*": allow
     "python3*": allow
     "echo*": allow
+    "echo *": allow
     "ls*": allow
     "cat*": allow
+    "head *": allow
+    "head*": allow
+    "tail *": allow
+    "gh *": allow
+    "gh run *": allow
     "pwd*": allow
     "semgrep*": allow
     "gitleaks*": allow

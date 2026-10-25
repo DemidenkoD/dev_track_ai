@@ -1,4 +1,5 @@
 import type { Recommendation } from '../types/api';
+import { AdvisoryBanner } from './badges';
 
 const PRIORITY_CLASS: Record<string, string> = {
   critical: 'badge badge-critical',
@@ -40,7 +41,21 @@ export function MentorPanel({
         </div>
       )}
       {sorted.length === 0 && (
-        <p className="muted">No recommendations yet — run an analysis to get mentor guidance.</p>
+        <div className="card stack" aria-live="polite">
+          <AdvisoryBanner />
+          <p className="muted">
+            No mentor recommendations for this project yet. The latest analysis run completed but
+            the backend returned <code>0 recommendations</code> — the tab is correctly wired and
+            showing an empty state, not a fetch error.
+          </p>
+          <p className="muted small">
+            Recommendations are advisory only (never an official course grade). Check the Scorecard
+            tab for per-criterion <em>Estimated</em> (AI-only) vs <em>Verified</em>{' '}
+            (human-confirmed) vs <em>Needs Review</em> states, and Development Progress (%) vs
+            Expected Course Score (X/24) which are tracked separately. If guidance is expected,
+            the root cause is upstream (worker/AI mentor persisted 0 rows for this run).
+          </p>
+        </div>
       )}
       <ol className="rec-list">
         {sorted.map((rec) => (

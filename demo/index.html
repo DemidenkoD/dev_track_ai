@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevTrack AI — Demo Studio & Teleprompter</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --card-bg: #131b2a;
+      --card-border: #1f2c42;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.2);
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+      --badge-bg: #1e293b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem 1.5rem;
+    }
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 2rem;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    h1 span {
+      background: linear-gradient(135deg, #60a5fa, #a855f7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-top: 0.25rem;
+    }
+    .controls {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    button:hover {
+      background: #2563eb;
+      box-shadow: 0 0 15px var(--accent-glow);
+    }
+    button.secondary {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+    }
+    button.secondary:hover {
+      background: #1e293b;
+    }
+    .timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .scene-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      transition: all 0.25s ease;
+      position: relative;
+    }
+    .scene-card.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 20px var(--accent-glow);
+      background: #172235;
+    }
+    .scene-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .scene-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #fff;
+    }
+    .scene-badge {
+      font-size: 0.75rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 9999px;
+      background: var(--badge-bg);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      font-weight: 500;
+    }
+    .screen-cue {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      color: #a78bfa;
+      background: rgba(167, 139, 250, 0.08);
+      border: 1px dashed rgba(167, 139, 250, 0.3);
+      padding: 0.4rem 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 0.75rem;
+    }
+    .narration {
+      font-size: 1rem;
+      color: #e2e8f0;
+      line-height: 1.6;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 0.9rem;
+      border-radius: 8px;
+      border-left: 3px solid var(--accent);
+      margin-bottom: 0.75rem;
+    }
+    .audio-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    audio {
+      width: 100%;
+      max-width: 450px;
+      height: 38px;
+      outline: none;
+    }
+    .meta-tag {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+    footer {
+      margin-top: 3rem;
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      border-top: 1px solid var(--card-border);
+      padding-top: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>DevTrack AI — <span>Demo Studio</span></h1>
+        <div class="subtitle">Interactive Scene Teleprompter & ElevenLabs Voiceover Player</div>
+      </div>
+      <div class="controls">
+        <button id="playAllBtn" onclick="togglePlayAll()">▶ Play All Scenes</button>
+        <button class="secondary" onclick="window.open('audio/demo_subtitles.vtt')">📄 View Subtitles (VTT)</button>
+      </div>
+    </header>
+
+    <div class="timeline" id="scenesContainer">
+      <!-- Populated via script -->
+    </div>
+
+    <footer>
+      DevTrack AI Demo Suite • Generated with ElevenLabs (Adam / Turbo v2.5) • 7 Scenes • Total: ~2m 45s
+    </footer>
+  </div>
+
+  <script>
+    let isPlayingAll = false;
+    let currentSceneIdx = 0;
+    let scenesData = [];
+
+    async function loadManifest() {
+      try {
+        const resp = await fetch('audio/demo_manifest.json');
+        scenesData = await resp.json();
+        renderScenes();
+      } catch (e) {
+        console.error('Failed to load manifest:', e);
+        document.getElementById('scenesContainer').innerHTML = `
+          <div style="color: #ef4444; padding: 2rem; text-align: center;">
+            Failed to load <code>audio/demo_manifest.json</code>. Ensure you have run <code>python3 scripts/generate_voiceover.py</code>.
+          </div>
+        `;
+      }
+    }
+
+    function renderScenes() {
+      const container = document.getElementById('scenesContainer');
+      container.innerHTML = scenesData.map((scene, idx) => `
+        <div class="scene-card" id="card-${idx}">
+          <div class="scene-header">
+            <div class="scene-title">${scene.title}</div>
+            <div class="scene-badge">Est: ${scene.estimated_seconds}s • ${scene.word_count} words</div>
+          </div>
+          <div class="screen-cue">
+            <span>🎥 <strong>Visual Screen:</strong> ${scene.screen_cue}</span>
+          </div>
+          <div class="narration">
+            "${scene.narration}"
+          </div>
+          <div class="audio-wrapper">
+            <audio id="audio-${idx}" controls src="audio/${scene.audio_file}" preload="metadata" onended="onAudioEnded(${idx})"></audio>
+            <span class="meta-tag">Track: ${scene.audio_file}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function togglePlayAll() {
+      const btn = document.getElementById('playAllBtn');
+      if (isPlayingAll) {
+        stopAll();
+        btn.innerText = '▶ Play All Scenes';
+      } else {
+        isPlayingAll = true;
+        btn.innerText = '⏹ Stop Playback';
+        playScene(0);
+      }
+    }
+
+    function playScene(idx) {
+      if (idx >= scenesData.length) {
+        stopAll();
+        return;
+      }
+      stopAllAudio();
+      currentSceneIdx = idx;
+      
+      // Update UI cards
+      document.querySelectorAll('.scene-card').forEach((c, i) => {
+        c.classList.toggle('active', i === idx);
+      });
+
+      const card = document.getElementById(`card-${idx}`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      const audio = document.getElementById(`audio-${idx}`);
+      if (audio) {
+        audio.currentTime = 0;
+        audio.play().catch(e => console.warn(e));
+      }
+    }
+
+    function onAudioEnded(idx) {
+      if (isPlayingAll) {
+        setTimeout(() => {
+          playScene(idx + 1);
+        }, 800); // 800ms natural breathing pause between scenes
+      }
+    }
+
+    function stopAllAudio() {
+      document.querySelectorAll('audio').forEach(a => {
+        a.pause();
+      });
+    }
+
+    function stopAll() {
+      isPlayingAll = false;
+      stopAllAudio();
+      document.querySelectorAll('.scene-card').forEach(c => c.classList.remove('active'));
+      const btn = document.getElementById('playAllBtn');
+      if (btn) btn.innerText = '▶ Play All Scenes';
+    }
+
+    // Spacebar to pause/play
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && e.target.tagName !== 'INPUT') {
+        e.preventDefault();
+        togglePlayAll();
+      }
+    });
+
+    loadManifest();
+  </script>
+</body>
+</html>
+

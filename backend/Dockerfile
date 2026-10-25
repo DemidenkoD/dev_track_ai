@@ -37,6 +37,7 @@ RUN if [ -f requirements.txt ]; then \
         "alembic==1.*" \
         "httpx==0.27.*" \
         "google-genai==1.*" \
+        "openai==1.*" \
         "prometheus-client==0.20.*" \
         "opentelemetry-api==1.*" \
         "opentelemetry-sdk==1.*" \

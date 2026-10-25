@@ -21,6 +21,10 @@ _PLACEHOLDER_GEMINI_KEYS: frozenset[str] = frozenset(
     {
         "",
         "your_gemini_api_key_here",
+        "your_glm_key_here",
+        "your_zai_key_here",
+        "your_opencode_api_key_here",
+        "your_opencode_key_here",
         "change-me",
         "changeme",
         "test",
@@ -101,7 +105,45 @@ class Settings(BaseSettings):
 
     # --- Gemini LLM (consumed by Track 2 runtime agents, not here) ---
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemma-4-31b-it"
+
+    # --- OpenCode / Muse Spark (takes precedence over Gemini when present) ---
+    # Canonical inference gateway: https://opencode.ai/inference/openai/v1
+    # (OpenAI-compatible `client.chat.completions.create(...)`; see task spec).
+    # OPENCODE_API_KEY is the primary credential; OPENCODE_KEY is kept as an
+    # alias — either non-placeholder value configures opencode
+    # (effective key = OPENCODE_API_KEY or OPENCODE_KEY). When configured it
+    # takes precedence over GEMINI_API_KEY via the effective_llm_* properties
+    # below. The raw key value must never be logged, printed, or included in
+    # errors. Real gateway keys start with `oc_sk_...`; only empty/known
+    # placeholder strings count as unconfigured (never prefix-match `oc_sk`).
+    # OPENCODE_MODEL accepts gateway model IDs passed through verbatim (no
+    # validation): muse-spark-1.3-contributor (default), kimi-k2.6,
+    # glm-5.3-flash, and fully-qualified forms like opencode-go/kimi-k2.6,
+    # opencode-go/glm-5.3-flash or z-ai/glm-5.3-flash when the gateway
+    # requires a provider prefix.
+    OPENCODE_API_KEY: str = ""
+    OPENCODE_KEY: str = ""
+    OPENCODE_MODEL: str = "muse-spark-1.3-contributor"
+    # Canonical default gateway; override via env for a custom opencode-go
+    # gateway endpoint. Plain URL only — never holds secrets, and never log
+    # key material alongside it.
+    OPENCODE_BASE_URL: str = "https://opencode.ai/inference/openai/v1"
+
+    # --- Zhipu GLM (OpenAI-compatible, precedence over OpenCode in auto mode) ---
+    # GLM_API_KEY is primary; ZAI_API_KEY is accepted as an alias for the same
+    # credential (auth `Authorization: Bearer <key>` against GLM_BASE_URL).
+    # Recommended generation defaults (temperature 1, top_p 0.95) are applied
+    # by callers, not stored here. Raw key values must never be logged.
+    GLM_API_KEY: str = ""
+    ZAI_API_KEY: str = ""
+    GLM_MODEL: str = "glm-5.3-flash"
+    GLM_BASE_URL: str = "https://api.z.ai/api/paas/v4/"
+    # Explicit provider pin: auto|glm|opencode|gemini (case-insensitive).
+    # Explicit glm/opencode/gemini is honored even when its key is missing
+    # (reports degraded/unconfigured, never silently falls through); auto
+    # resolves GLM > OPENCODE > GEMINI.
+    LLM_PROVIDER: str = "auto"
 
     # --- GitHub (optional token for higher public rate limits) ---
     GITHUB_TOKEN: str = ""
@@ -128,6 +170,133 @@ class Settings(BaseSettings):
     def gemini_configured(self) -> bool:
         """Boolean-only Gemini signal (never exposes the key value)."""
         return not is_placeholder_gemini_key(self.GEMINI_API_KEY)
+
+    @property
+    def opencode_configured(self) -> bool:
+        """Boolean-only OpenCode signal (never exposes the key value).
+
+        OPENCODE_API_KEY is primary, OPENCODE_KEY is an alias — either
+        non-placeholder value configures opencode.
+        """
+        return not is_placeholder_gemini_key(self._opencode_effective_key)
+
+    @property
+    def glm_configured(self) -> bool:
+        """Boolean-only GLM signal (GLM_API_KEY or ZAI_API_KEY alias)."""
+        return not is_placeholder_gemini_key(
+            self.GLM_API_KEY
+        ) or not is_placeholder_gemini_key(self.ZAI_API_KEY)
+
+    @property
+    def _opencode_effective_key(self) -> str:
+        """OPENCODE_API_KEY primary, OPENCODE_KEY alias (never log this)."""
+        if not is_placeholder_gemini_key(self.OPENCODE_API_KEY):
+            return self.OPENCODE_API_KEY
+        return self.OPENCODE_KEY
+
+    @property
+    def _glm_effective_key(self) -> str:
+        """GLM_API_KEY primary, ZAI_API_KEY alias (never log this)."""
+        if not is_placeholder_gemini_key(self.GLM_API_KEY):
+            return self.GLM_API_KEY
+        return self.ZAI_API_KEY
+
+    @property
+    def _llm_provider_choice(self) -> str:
+        """Normalized LLM_PROVIDER pin (auto|glm|opencode|gemini)."""
+        choice = (self.LLM_PROVIDER or "auto").strip().lower()
+        if choice in ("auto", "glm", "opencode", "gemini"):
+            return choice
+        return "auto"
+
+    @property
+    def effective_llm_configured(self) -> bool:
+        """True when the resolved provider holds a real key (boolean only).
+
+        Explicit LLM_PROVIDER pins never fall through: a missing key for the
+        pinned provider reports False (degraded/unconfigured). Auto resolves
+        GLM > OPENCODE > GEMINI.
+        """
+        choice = self._llm_provider_choice
+        if choice == "glm":
+            return self.glm_configured
+        if choice == "opencode":
+            return self.opencode_configured
+        if choice == "gemini":
+            return self.gemini_configured
+        return self.glm_configured or self.opencode_configured or self.gemini_configured
+
+    @property
+    def effective_llm_provider(self) -> str:
+        """Resolved provider: explicit pin honored, else GLM > OPENCODE > GEMINI.
+
+        Returns 'unconfigured' in auto mode when no key is present.
+        """
+        choice = self._llm_provider_choice
+        if choice in ("glm", "opencode", "gemini"):
+            return choice
+        if self.glm_configured:
+            return "glm"
+        if self.opencode_configured:
+            return "opencode"
+        if self.gemini_configured:
+            return "gemini"
+        return "unconfigured"
+
+    @property
+    def effective_llm_model(self) -> str:
+        """Model for the resolved provider (explicit pin honored, else auto)."""
+        choice = self._llm_provider_choice
+        if choice == "glm":
+            return self.GLM_MODEL or "glm-5.3-flash"
+        if choice == "opencode":
+            return self.OPENCODE_MODEL
+        if choice == "gemini":
+            return self.GEMINI_MODEL
+        if self.glm_configured:
+            return self.GLM_MODEL or "glm-5.3-flash"
+        if self.opencode_configured:
+            return self.OPENCODE_MODEL
+        return self.GEMINI_MODEL
+
+    @property
+    def effective_llm_api_key(self) -> str:
+        """Effective key honoring GLM > OPENCODE > GEMINI (never log this).
+
+        Explicit LLM_PROVIDER pins never fall through to another provider's
+        key; auto resolves GLM > OPENCODE > GEMINI.
+        """
+        choice = self._llm_provider_choice
+        if choice == "glm":
+            return self._glm_effective_key
+        if choice == "opencode":
+            return self._opencode_effective_key
+        if choice == "gemini":
+            return self.GEMINI_API_KEY
+        if self.glm_configured:
+            return self._glm_effective_key
+        if self.opencode_configured:
+            return self._opencode_effective_key
+        return self.GEMINI_API_KEY
+
+    @property
+    def effective_llm_base_url(self) -> str:
+        """Base URL for the resolved provider (plain URL, never holds secrets).
+
+        - provider ``glm`` → ``GLM_BASE_URL`` (direct Z.AI default).
+        - provider ``opencode`` → ``OPENCODE_BASE_URL`` (canonical
+          ``https://opencode.ai/inference/openai/v1`` default; a custom URL
+          may override it for an opencode-go gateway).
+        - other providers return "".
+        """
+        if self.effective_llm_provider == "glm":
+            return self.GLM_BASE_URL or "https://api.z.ai/api/paas/v4/"
+        if self.effective_llm_provider == "opencode":
+            return (
+                self.OPENCODE_BASE_URL
+                or "https://opencode.ai/inference/openai/v1"
+            )
+        return ""
 
     @property
     def cors_origins_list(self) -> list[str]:

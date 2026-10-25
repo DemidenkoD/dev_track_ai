@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import type {
   AnalysisRun,
   CriterionAssessment,
@@ -77,6 +77,19 @@ export function ProjectDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [showTrigger, setShowTrigger] = useState(false);
   const [checkingDeploy, setCheckingDeploy] = useState(false);
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab') as Tab | null;
+    if (tabParam && TABS.some((t) => t.id === tabParam)) {
+      setTab(tabParam);
+    }
+    if (searchParams.get('trigger') === 'open') {
+      setShowTrigger(true);
+    } else if (searchParams.get('trigger') === 'close') {
+      setShowTrigger(false);
+    }
+  }, [searchParams]);
 
   const load = useCallback(async () => {
     if (!projectId) return;

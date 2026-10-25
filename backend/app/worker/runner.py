@@ -2,7 +2,13 @@
 
 Queue protocol:
     - Manual analyses are enqueued as ``analysis_runs`` rows with
-      ``status='queued'`` by the Track 1 API.
+      ``status='QUEUED'`` (ORM NAME; ``SqlEnum(native_enum=False)`` without
+      ``values_callable`` persists NAMES, not values) by the Track 1 API.
+      All raw-SQL reads in this worker are therefore case-insensitive
+      (``LOWER(status::text) = 'queued'`` on Postgres, plain ``LOWER(status)``
+      on SQLite) so mixed-case rows still drain. The ``::text`` cast keeps
+      ``lower()`` working whether the column is VARCHAR (native_enum=False)
+      or a legacy native PG ENUM (where ``lower(enum)`` does not exist).
     - This worker claims them with ``SELECT ... FOR UPDATE SKIP LOCKED``
       so multiple worker replicas never double-process a run.
     - Active projects also get daily analyses when their
@@ -38,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -55,12 +62,139 @@ def _utcnow() -> datetime:
 
 
 # ---------------------------------------------------------------------------
+# Redacted Gemini fallback diagnostics (Track 3-owned, no secrets in logs/DB)
+# ---------------------------------------------------------------------------
+
+_GEMINI_DIAG_METHOD = "generateContent"
+_GEMINI_DIAG_MAX_LEN = 500
+_STATUS_CODE_RE = re.compile(r"\b(400|401|403|404|408|429|500|502|503|504|529)\b")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
+_APIKEY_RE = re.compile(r"AIza[0-9A-Za-z_~-]{10,}")
+
+
+def _redact_text(text: str) -> str:
+    """Redact secret/email material before logging or persisting."""
+    value = str(text or "")
+    try:
+        from app.services.security_scanner import redact_secrets  # type: ignore
+
+        value = redact_secrets(value)
+    except Exception:
+        pass
+    # Never leak key/bearer/email fragments that may appear in SDK errors.
+    try:
+        value = _EMAIL_RE.sub("[REDACTED_EMAIL]", value)
+        value = _BEARER_RE.sub("Bearer [REDACTED]", value)
+        value = _APIKEY_RE.sub("[REDACTED]", value)
+    except Exception:
+        pass
+    return value
+
+
+def _extract_status_code(exc: BaseException | None) -> str | None:
+    """Best-effort HTTP status/code from an exception chain (no secrets)."""
+    seen: list[str] = []
+    current: BaseException | None = exc
+    depth = 0
+    while current is not None and depth < 4:
+        for attr in ("status", "status_code", "code", "http_status"):
+            try:
+                candidate = getattr(current, attr, None)
+                if isinstance(candidate, int) and 100 <= candidate <= 599:
+                    return str(candidate)
+                if isinstance(candidate, str) and candidate.isdigit():
+                    code = int(candidate)
+                    if 100 <= code <= 599:
+                        return str(code)
+            except Exception:
+                pass
+        try:
+            seen.append(str(current))
+        except Exception:
+            pass
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+        # Avoid infinite loops on self-referential contexts.
+        depth += 1
+        if current is exc:
+            break
+    try:
+        joined = " | ".join(seen)
+        match = _STATUS_CODE_RE.search(joined)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _safe_gemini_model_name() -> str:
+    """Model name only (never the key); 'unknown' when unresolvable."""
+    try:
+        from app.agents.base import get_gemini_model  # type: ignore  # read-only
+
+        name = str(get_gemini_model() or "").strip()
+        return name or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _build_gemini_fallback_diagnostic(
+    exc: BaseException | None,
+    *,
+    latency_ms: float | None = None,
+) -> str:
+    """Single-line redacted diagnostic for a Gemini fallback (<=500 chars)."""
+    code = _extract_status_code(exc) if exc is not None else None
+    model = _safe_gemini_model_name()
+    excerpt = _redact_text(str(exc)[:500] if exc is not None else "")
+    # Collapse whitespace so the DB/summary line stays single-line.
+    excerpt = re.sub(r"\s+", " ", excerpt).strip()[:200]
+    latency_part = (
+        f" latency_ms={int(latency_ms)}"
+        if isinstance(latency_ms, (int, float)) and latency_ms >= 0
+        else ""
+    )
+    code_part = code or (type(exc).__name__ if exc is not None else "unknown")
+    base = (
+        f"Gemini {code_part} {model} ({_GEMINI_DIAG_METHOD}){latency_part} "
+        f"— using fallback needs_review."
+    )
+    if excerpt and excerpt not in base:
+        base = f"{base} Excerpt: {excerpt}"
+    return _redact_text(base)[:_GEMINI_DIAG_MAX_LEN]
+
+
+def _merge_fallback_diagnostic_into_result(result: Any, diagnostic: str | None) -> None:
+    """Surface a fallback diagnostic in summary_markdown/error (no secrets)."""
+    if not diagnostic:
+        return
+    diagnostic = _redact_text(str(diagnostic))[:_GEMINI_DIAG_MAX_LEN]
+    try:
+        current_error = str(getattr(result, "error", None) or "")
+        if not current_error:
+            result.error = diagnostic
+        elif diagnostic not in current_error:
+            result.error = (current_error + " | " + diagnostic)[:_GEMINI_DIAG_MAX_LEN]
+        summary = str(getattr(result, "summary_markdown", None) or "")
+        warning_line = f"- Inspection warning: {diagnostic}"
+        if warning_line not in summary:
+            if summary and not summary.endswith("\n"):
+                summary += "\n"
+            result.summary_markdown = summary + warning_line + "\n"
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Queue primitives (PostgreSQL SKIP LOCKED with SQLite fallback)
 # ---------------------------------------------------------------------------
 
 CLAIM_SQL_POSTGRES = """
 SELECT id FROM analysis_runs
-WHERE status = 'queued'
+WHERE LOWER(status::text) = 'queued'
 ORDER BY created_at ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED
@@ -68,7 +202,7 @@ FOR UPDATE SKIP LOCKED
 
 CLAIM_SQL_FALLBACK = """
 SELECT id FROM analysis_runs
-WHERE status = 'queued'
+WHERE LOWER(status) = 'queued'
 ORDER BY created_at ASC
 LIMIT 1
 """
@@ -89,20 +223,71 @@ def claim_next_queued_run(session: Any) -> UUID | None:
     sql = CLAIM_SQL_POSTGRES if dialect == "postgresql" else CLAIM_SQL_FALLBACK
     try:
         row = session.execute(text(sql)).first()
-    except Exception:
-        # Postgres executemany edge / locked-row contention: treat as empty.
-        session.rollback()
-        return None
+    except Exception as exc:
+        # PG native ENUM has no lower(enum) function — retry with the
+        # alternate cast form before giving up. Log the class only
+        # (never row contents) so silent-fail loops are diagnosable.
+        logger.warning("Claim query failed (%s); retrying alternate cast.", type(exc).__name__)
+        try:
+            session.rollback()
+            alt = CLAIM_SQL_FALLBACK if sql == CLAIM_SQL_POSTGRES else CLAIM_SQL_POSTGRES
+            # SQLite cannot parse "::text"; strip it for the retry path.
+            if dialect != "postgresql":
+                alt = alt.replace("::text", "")
+            row = session.execute(text(alt)).first()
+        except Exception as exc2:
+            logger.warning("Claim retry failed (%s).", type(exc2).__name__)
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            return None
     if not row:
         return None
     raw_id = row[0]
     run_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
-    run = _get_run(session, run_id)
-    if run is None or str(getattr(run, "status", "")) != "queued":
+    # SQLite stores UUIDs as 32-hex (no dashes); PG uses native uuid.
+    # Use BOTH forms so raw lookups match on either backend.
+    id_dashed = str(run_id)
+    id_hex = run_id.hex
+    # Status check via raw SQL: bypasses ORM Enum coercion so legacy
+    # uppercase NAMES ('QUEUED'/'MANUAL') still drain. session.get() raises
+    # KeyError('MANUAL') on such rows (values_callable expects lowercase).
+    try:
+        st = session.execute(
+            text("SELECT status FROM analysis_runs WHERE id IN (:a, :b)"),
+            {"a": id_dashed, "b": id_hex},
+        ).first()
+    except Exception as exc:
+        logger.warning("Claim status check failed (%s).", type(exc).__name__)
+        session.rollback()
         return None
-    run.status = _analysis_status("running")
-    run.started_at = _utcnow()
-    session.flush()
+    if st is None or str(st[0] or "").lower() != "queued":
+        return None
+    # Claim via raw UPDATE (no ORM coercion). PG first, SQLite fallback.
+    try:
+        session.execute(
+            text(
+                "UPDATE analysis_runs SET status = 'running', started_at = now() "
+                "WHERE id IN (:a, :b)"
+            ),
+            {"a": id_dashed, "b": id_hex},
+        )
+        session.flush()
+    except Exception:
+        try:
+            session.execute(
+                text(
+                    "UPDATE analysis_runs SET status = :s, started_at = :ts "
+                    "WHERE id IN (:a, :b)"
+                ),
+                {"s": "running", "ts": _utcnow(), "a": id_dashed, "b": id_hex},
+            )
+            session.flush()
+        except Exception as exc:
+            logger.warning("Claim update failed (%s).", type(exc).__name__)
+            session.rollback()
+            return None
     return run_id
 
 
@@ -115,12 +300,22 @@ def schedule_daily_analyses(session: Any, *, now: datetime | None = None) -> int
         rows = session.execute(
             text(
                 "SELECT id, daily_schedule_cron, last_analysis_at "
-                "FROM projects WHERE status = 'active'"
+                "FROM projects WHERE LOWER(status::text) = 'active'"
             )
         ).all()
     except Exception as exc:
-        logger.warning("Daily scheduling query failed (%s).", type(exc).__name__)
-        return 0
+        logger.warning("Daily scheduling query failed (%s); retrying plain cast.", type(exc).__name__)
+        try:
+            session.rollback()
+            rows = session.execute(
+                text(
+                    "SELECT id, daily_schedule_cron, last_analysis_at "
+                    "FROM projects WHERE LOWER(status) = 'active'"
+                )
+            ).all()
+        except Exception as exc2:
+            logger.warning("Daily scheduling retry failed (%s).", type(exc2).__name__)
+            return 0
     created = 0
     for project_id_raw, cron, last_at in rows:
         try:
@@ -134,7 +329,7 @@ def schedule_daily_analyses(session: Any, *, now: datetime | None = None) -> int
             session.execute(
                 text(
                     "INSERT INTO analysis_runs (id, project_id, trigger_type, status, created_at) "
-                    "VALUES (gen_random_uuid(), :pid, 'daily', 'queued', now())"
+                    "VALUES (gen_random_uuid(), :pid, 'DAILY', 'QUEUED', now())"
                 ),
                 {"pid": str(project_id)},
             )
@@ -147,7 +342,7 @@ def schedule_daily_analyses(session: Any, *, now: datetime | None = None) -> int
                 session.execute(
                     text(
                         "INSERT INTO analysis_runs (id, project_id, trigger_type, status) "
-                        "VALUES (:rid, :pid, 'daily', 'queued')"
+                        "VALUES (:rid, :pid, 'DAILY', 'QUEUED')"
                     ),
                     {"rid": str(_uuid.uuid4()), "pid": str(project_id)},
                 )
@@ -198,13 +393,24 @@ def _has_pending_run(session: Any, project_id: UUID) -> bool:
         row = session.execute(
             text(
                 "SELECT 1 FROM analysis_runs WHERE project_id = :pid "
-                "AND status IN ('queued', 'running') LIMIT 1"
+                "AND LOWER(status::text) IN ('queued', 'running') LIMIT 1"
             ),
             {"pid": str(project_id)},
         ).first()
         return row is not None
     except Exception:
-        return False
+        try:
+            session.rollback()
+            row = session.execute(
+                text(
+                    "SELECT 1 FROM analysis_runs WHERE project_id = :pid "
+                    "AND LOWER(status) IN ('queued', 'running') LIMIT 1"
+                ),
+                {"pid": str(project_id)},
+            ).first()
+            return row is not None
+        except Exception:
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -329,13 +535,19 @@ def build_gemini_score_fn() -> Callable[..., list[dict[str, Any]]]:
         try:
             from app.agents import rubric_analyst  # type: ignore  # lazy Track 2
         except Exception as exc:
+            diagnostic = _build_gemini_fallback_diagnostic(exc, latency_ms=None)
             logger.warning(
-                "Gemini scoring unavailable, using stub (%s).",
+                "Gemini scoring unavailable (%s model=%s method=%s); %s",
                 type(exc).__name__,
+                _safe_gemini_model_name(),
+                _GEMINI_DIAG_METHOD,
+                diagnostic,
             )
+            _gemini_score_fn._last_fallback_diagnostic = diagnostic  # type: ignore[attr-defined]
             from app.services.analysis_pipeline import stub_score_proposals
 
             return stub_score_proposals(criteria, evidence)
+        start = time.perf_counter()
         try:
             output = rubric_analyst.evaluate_scorecard(
                 criteria=criteria,
@@ -354,15 +566,25 @@ def build_gemini_score_fn() -> Callable[..., list[dict[str, Any]]]:
             ]
             if not converted:
                 raise ValueError("Track 2 scorecard returned no proposals")
+            _gemini_score_fn._last_fallback_diagnostic = None  # type: ignore[attr-defined]
             return converted
         except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000.0
+            diagnostic = _build_gemini_fallback_diagnostic(exc, latency_ms=latency_ms)
             logger.warning(
-                "Gemini scoring fallback to stub (%s).", type(exc).__name__
+                "Gemini scoring fallback (%s model=%s method=%s latency_ms=%d); %s",
+                type(exc).__name__,
+                _safe_gemini_model_name(),
+                _GEMINI_DIAG_METHOD,
+                int(latency_ms),
+                diagnostic,
             )
+            _gemini_score_fn._last_fallback_diagnostic = diagnostic  # type: ignore[attr-defined]
             from app.services.analysis_pipeline import stub_score_proposals
 
             return stub_score_proposals(criteria, evidence)
 
+    _gemini_score_fn._last_fallback_diagnostic = None  # type: ignore[attr-defined]
     return _gemini_score_fn
 
 
@@ -387,8 +609,8 @@ def process_single_run(
     run = _get_run(session, run_id)
     if run is None:
         return False
-    project = _get_project(session, getattr(run, "project_id"))
-    previous_sha = getattr(run, "previous_commit_sha", None)
+    project = _get_project(session, _row_get(run, "project_id"))
+    previous_sha = _row_get(run, "previous_commit_sha", None)
     gemini_enabled = is_gemini_enabled()
     # Boolean only — never log the key itself.
     logger.info(
@@ -399,37 +621,64 @@ def process_single_run(
     score_fn = build_gemini_score_fn() if gemini_enabled else None
     try:
         result = run_analysis_stages(
-            github_repo_url=getattr(project, "github_repo_url", ""),
-            diary_override=getattr(project, "diary_path", None),
-            deployment_override=getattr(project, "deployment_url", None),
-            dev_statuses=_dev_statuses(session, getattr(run, "project_id")),
+            github_repo_url=_row_get(project, "github_repo_url", ""),
+            diary_override=_row_get(project, "diary_path", None),
+            deployment_override=_row_get(project, "deployment_url", None),
+            dev_statuses=_dev_statuses(session, _row_get(run, "project_id")),
             criteria=_project_criteria(session, project),
             previous_commit_sha=previous_sha,
             score_fn=score_fn,
         )
+        # Surface a Gemini fallback (e.g. HTTP 500 from generateContent) in
+        # the persisted summary so a degraded run is never a silent low
+        # score. Scoring values are untouched — diagnostic text only.
+        try:
+            fallback_diag = getattr(score_fn, "_last_fallback_diagnostic", None)
+            if fallback_diag:
+                _merge_fallback_diagnostic_into_result(result, str(fallback_diag))
+        except Exception:
+            pass
         persist_pipeline_result(
-            session, analysis_run_id=run_id, project_id=getattr(run, "project_id"), result=result
+            session, analysis_run_id=run_id, project_id=_row_get(run, "project_id"), result=result
         )
-        run.status = _analysis_status("completed")
-        run.completed_at = _utcnow()
-        if project is not None:
-            project.last_analysis_at = _utcnow()
-        session.commit()
+        # ORM-first (fresh lowercase rows), raw fallback (legacy uppercase rows
+        # whose Enum coercion fails). Never auto-awards: pipeline only writes
+        # evidence/scorecard rows; points stay estimated until human verifies.
+        try:
+            run.status = _analysis_status("completed")  # type: ignore[attr-defined]
+            run.completed_at = _utcnow()  # type: ignore[attr-defined]
+            if project is not None and not hasattr(project, "_mapping"):
+                project.last_analysis_at = _utcnow()  # type: ignore[attr-defined]
+            session.flush()
+            if project is not None:
+                _touch_project_raw(session, _row_get(project, "id"))
+            session.commit()
+        except (AttributeError, Exception):
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            _mark_run_raw(session, run_id, "completed")
+            if project is not None:
+                _touch_project_raw(session, _row_get(project, "id"))
+            session.commit()
         ok = True
     except Exception as exc:
         try:
             session.rollback()
         except Exception:
             pass
-        run = _get_run(session, run_id)
-        if run is not None:
-            run.status = _analysis_status("failed")
-            run.error_message = f"{type(exc).__name__}: {str(exc)[:500]}"
-            run.completed_at = _utcnow()
+        try:
+            _mark_run_raw(session, run_id, "failed", f"{type(exc).__name__}: {str(exc)[:500]}")
             try:
                 session.commit()
             except Exception:
                 session.rollback()
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
         logger.warning("Analysis run failed (%s).", type(exc).__name__)
         ok = False
     try:
@@ -551,36 +800,170 @@ def _project_criteria(session: Any, project: Any) -> list[dict[str, Any]]:
         return []
 
 
+def _namespace_from_row(row: Any) -> Any:
+    """Adapt a SQLAlchemy Row to attribute-style access (legacy uppercase rows).
+
+    ORM ``session.get()`` raises ``KeyError('MANUAL')`` on pre-fix rows whose
+    VARCHAR holds uppercase NAMES while the Enum ``values_callable`` expects
+    lowercase values. Raw rows expose ``_mapping``; wrap them in a namespace
+    so ``getattr(run, 'project_id')`` etc. keep working.
+    """
+    from types import SimpleNamespace
+
+    try:
+        mapping = getattr(row, "_mapping", None)
+        if mapping is not None:
+            return SimpleNamespace(**dict(mapping))
+    except Exception:
+        pass
+    return row
+
+
+def _row_get(obj: Any, name: str, default: Any = None) -> Any:
+    mapping = getattr(obj, "_mapping", None)
+    if mapping is not None:
+        try:
+            return mapping.get(name, default)
+        except Exception:
+            pass
+    return getattr(obj, name, default)
+
+
+def _mark_run_raw(session: Any, run_id: UUID, status: str, error: str | None = None) -> None:
+    """Persist run status via raw SQL (no ORM Enum coercion)."""
+    from sqlalchemy import text
+
+    a, b = str(run_id), run_id.hex  # dashed + hex cover PG + SQLite stores
+    try:
+        if error is None:
+            session.execute(
+                text(
+                    "UPDATE analysis_runs SET status = :s, completed_at = now() "
+                    "WHERE id IN (:a, :b)"
+                ),
+                {"s": status, "a": a, "b": b},
+            )
+        else:
+            session.execute(
+                text(
+                    "UPDATE analysis_runs SET status = :s, error_message = :e, "
+                    "completed_at = now() WHERE id IN (:a, :b)"
+                ),
+                {"s": status, "e": error[:500], "a": a, "b": b},
+            )
+        session.flush()
+        return
+    except Exception:
+        pass
+    try:
+        if error is None:
+            session.execute(
+                text(
+                    "UPDATE analysis_runs SET status = :s, completed_at = :ts "
+                    "WHERE id IN (:a, :b)"
+                ),
+                {"s": status, "ts": _utcnow(), "a": a, "b": b},
+            )
+        else:
+            session.execute(
+                text(
+                    "UPDATE analysis_runs SET status = :s, error_message = :e, "
+                    "completed_at = :ts WHERE id IN (:a, :b)"
+                ),
+                {"s": status, "e": error[:500], "ts": _utcnow(), "a": a, "b": b},
+            )
+        session.flush()
+    except Exception as exc:
+        logger.warning("Run status update failed (%s).", type(exc).__name__)
+        raise
+
+
+def _touch_project_raw(session: Any, project_id: Any) -> None:
+    """Best-effort last_analysis_at bump via raw SQL (legacy-row safe)."""
+    from sqlalchemy import text
+
+    try:
+        session.execute(
+            text("UPDATE projects SET last_analysis_at = now() WHERE id = :pid"),
+            {"pid": str(project_id)},
+        )
+        session.flush()
+        return
+    except Exception:
+        pass
+    try:
+        session.execute(
+            text("UPDATE projects SET last_analysis_at = :ts WHERE id = :pid"),
+            {"ts": _utcnow(), "pid": str(project_id)},
+        )
+        session.flush()
+    except Exception:
+        pass
+
+
 def _get_run(session: Any, run_id: UUID) -> Any | None:
     try:
         from app.models.models import AnalysisRun  # type: ignore  # read-only
 
-        return session.get(AnalysisRun, run_id)
+        obj = session.get(AnalysisRun, run_id)
+        if obj is not None:
+            return obj
     except Exception:
-        from sqlalchemy import text
-
+        # Legacy uppercase NAMES fail Enum coercion — fall through to raw.
         try:
-            return session.execute(
-                text("SELECT * FROM analysis_runs WHERE id = :rid"), {"rid": str(run_id)}
-            ).first()
+            session.rollback()
         except Exception:
-            return None
+            pass
+    from sqlalchemy import text
+
+    try:
+        row = session.execute(
+            text("SELECT * FROM analysis_runs WHERE id = :rid"), {"rid": str(run_id)}
+        ).first()
+        return _namespace_from_row(row) if row is not None else None
+    except Exception:
+        return None
 
 
 def _get_project(session: Any, project_id: Any) -> Any | None:
     try:
         from app.models.models import Project  # type: ignore  # read-only
 
-        return session.get(Project, project_id)
+        obj = session.get(Project, project_id)
+        if obj is not None:
+            return obj
+    except Exception:
+        # Legacy uppercase status ('ACTIVE') fails Enum coercion — raw fallback.
+        try:
+            session.rollback()
+        except Exception:
+            pass
+    from sqlalchemy import text
+
+    try:
+        row = session.execute(
+            text("SELECT * FROM projects WHERE id = :pid"), {"pid": str(project_id)}
+        ).first()
+        return _namespace_from_row(row) if row is not None else None
     except Exception:
         return None
 
 
 def _analysis_status(value: str) -> Any:
+    """Build an ``AnalysisStatus`` tolerating either NAME or value case.
+
+    ORM convention (Track 1): ``SqlEnum(..., native_enum=False)`` without
+    ``values_callable`` persists enum NAMES (``'QUEUED'``), so raw-SQL reads
+    elsewhere use ``LOWER(status)`` and raw-SQL writes use uppercase NAMEs.
+    The ORM itself accepts lowercase values here and persists NAMES.
+    """
     try:
         from app.schemas.enums import AnalysisStatus  # type: ignore
 
-        return AnalysisStatus(value)
+        try:
+            return AnalysisStatus(value)
+        except ValueError:
+            return AnalysisStatus(str(value).lower())
     except Exception:
         return value
 
@@ -604,8 +987,12 @@ def run_once(session_factory: SessionFactory) -> dict[str, int]:
         try:
             run_id = claim_next_queued_run(session)
             session.commit()
-        except Exception:
-            session.rollback()
+        except Exception as exc:
+            logger.warning("Claim/commit failed (%s).", type(exc).__name__)
+            try:
+                session.rollback()
+            except Exception:
+                pass
             return stats
         if run_id is None:
             return stats
