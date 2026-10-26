@@ -12,12 +12,42 @@
 
 ---
 
-## Predefined Reviewer Credentials
+## Live Production Deployment
 
-Per Product Specification §3, DevTrack AI uses a single predefined account (no public registration). Reviewers can log in using:
+DevTrack AI is deployed live on a public cloud VPS with full HTTPS, edge TLS termination, automated Certbot renewal, and OpenTelemetry instrumentation:
 
-- **Username:** `reviewer@datatalks.club` *(or overridden via `ADMIN_USERNAME` in `.env`)*
-- **Password:** `devtrack-zoomcamp-2026` *(or overridden via `ADMIN_PASSWORD` in `.env`)*
+- **Live Application URL:** https://ct-academia.pl
+- **Backend Health Probe:** https://ct-academia.pl/api/v1/health
+- **Edge Health Probe:** https://ct-academia.pl/healthz
+- **OpenAPI Specification Docs:** https://ct-academia.pl/docs
+- **Predefined Reviewer Credentials:**
+  - **Username:** `reviewer@datatalks.club` *(or configured via `ADMIN_USERNAME` in `.env`)*
+  - **Password:** `devtrack-zoomcamp-2026` *(or configured via `ADMIN_PASSWORD` in `.env`)*
+  - **Role:** `reviewer` (pre-seeded account per Product Spec §3, no public registration needed)
+
+---
+
+## Problem & Solution Summary
+
+### The Problem
+Technical course students frequently drop out or receive reduced scores due to five recurring failure modes:
+1. **Requirements Blindspots:** Missing critical rubric items (e.g., containerization or observability) despite functional code.
+2. **Silent Degradation:** Broken builds, unpinned dependencies, or expired endpoints going unnoticed until final grading.
+3. **Premature Optimization & Last-Minute Rushing:** Polishing non-rubric features while missing baseline passing criteria.
+4. **False Confidence:** Relying on ungrounded conversational advice without actual repository artifact verification.
+5. **Unverifiable Demos:** Missing live deployment URLs, absent reviewer credentials, or unreachable health probes.
+
+Detailed analysis of the student journey and shortfall of existing tools is documented in [docs/PROBLEM_DESCRIPTION.md](docs/PROBLEM_DESCRIPTION.md).
+
+### The Solution
+DevTrack AI provides an automated, read-only AI mentor that connects to a public GitHub repository and delivers continuous rubric-grounded guidance:
+- **Evidence-Grounded Scorecard:** Evaluates 12 course criteria (24 points max, 10 passing) into explicit states: `estimated`, `verified`, or `needs_review`.
+- **Dual Progress Tracking:** Separates actionable task completion (**Development Progress**) from rubric points (**Course Score**).
+- **Security & Diary Alignment:** Runs deterministic security scanners (`semgrep`, `gitleaks`, `bandit`, `pip-audit`, `npm audit`) and reconciles developer diary claims against real git commit history.
+- **Actionable Mentorship:** Generates prioritized, effort-estimated remediation steps targeting score gaps.
+- **Operational Reliability:** Monitors live deployment health with SSRF-protected probers and provides an autonomous, read-only `OnCallAgent` to diagnose production incidents.
+
+A comprehensive chronological engineering log detailing architectural decisions, blockers, and solutions across Phases 1–4 is documented in [docs/DIARY.md](docs/DIARY.md).
 
 ---
 
@@ -52,6 +82,7 @@ pytest && npm --prefix frontend run typecheck && (cd frontend && npx playwright 
 This repository is structured for **simultaneous multi-agent development** across 6 non-overlapping ownership tracks:
 
 - **Problem Statement:** [docs/PROBLEM_DESCRIPTION.md](docs/PROBLEM_DESCRIPTION.md)
+- **Engineering Diary:** [docs/DIARY.md](docs/DIARY.md)
 - **Product Specification v0.4:** [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)
 - **Agent Team & Ownership Matrix:** [docs/specs/AGENT_TEAM_SPEC.md](docs/specs/AGENT_TEAM_SPEC.md)
 - **Database Schema Specification:** [docs/specs/DATABASE_SCHEMA.md](docs/specs/DATABASE_SCHEMA.md)

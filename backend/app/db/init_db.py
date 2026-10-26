@@ -88,18 +88,152 @@ def seed_builtin_rubric(db: Session) -> None:
     logger.info("Seeded built-in rubric %s v%s", slug, version)
 
 
+def _default_dev_task_specs() -> dict[str, dict]:
+    """One realistic DevelopmentMilestone spec per rubric criterion code.
+
+    9 x completed, 2 x partial, 1 x outstanding — so Development Progress
+    shows meaningful values on a fresh seed while leaving all
+    CriterionAssessment scores untouched (never auto-awarded).
+    """
+    from app.schemas.enums import DevelopmentMilestoneStatus
+
+    Completed = DevelopmentMilestoneStatus.COMPLETED
+    Partial = DevelopmentMilestoneStatus.PARTIAL
+    Outstanding = DevelopmentMilestoneStatus.OUTSTANDING
+    return {
+        "problem_description": {
+            "title": "Document problem statement and target users",
+            "description": "Write docs/PROBLEM_DESCRIPTION.md: who has the problem, why existing approaches fall short, how DevTrack AI solves it.",
+            "status": Completed,
+            "estimated_effort_hours": 3.0,
+        },
+        "product_specification": {
+            "title": "Maintain product specification with acceptance criteria",
+            "description": "Keep docs/PRODUCT_SPEC.md current: features, architecture, data model, security, acceptance criteria.",
+            "status": Completed,
+            "estimated_effort_hours": 4.0,
+        },
+        "agent_team_specification": {
+            "title": "Define agent team roles and coordination protocol",
+            "description": "Maintain docs/specs/AGENT_TEAM_SPEC.md + .agents/agents/ profiles with file ownership and structured outputs.",
+            "status": Completed,
+            "estimated_effort_hours": 4.0,
+        },
+        "context_management": {
+            "title": "Keep hierarchical AGENTS.md and skills in sync",
+            "description": "Maintain scoped AGENTS.md files and modular .agents/skills/ runbooks via progressive disclosure.",
+            "status": Completed,
+            "estimated_effort_hours": 3.0,
+        },
+        "application": {
+            "title": "Deliver end-to-end app runnable with a single command",
+            "description": "FastAPI backend + React frontend + PostgreSQL connected end-to-end; `make up` starts the full stack locally.",
+            "status": Completed,
+            "estimated_effort_hours": 8.0,
+        },
+        "testing": {
+            "title": "Cover backend pytest and frontend E2E suites",
+            "description": "Backend pytest unit/integration tests plus Playwright/Vitest E2E runnable via a single command.",
+            "status": Completed,
+            "estimated_effort_hours": 6.0,
+        },
+        "containerization": {
+            "title": "Containerize all services with Docker Compose",
+            "description": "Dockerfiles for backend/frontend/worker plus docker-compose orchestration of DB, proxy, and observability.",
+            "status": Completed,
+            "estimated_effort_hours": 5.0,
+        },
+        "deployment": {
+            "title": "Publish live HTTPS deployment with health checks",
+            "description": "Live deployment at the configured deployment_url with HTTPS, /health checks, and reviewer access docs in README.",
+            "status": Completed,
+            "estimated_effort_hours": 4.0,
+        },
+        "ci_cd": {
+            "title": "Maintain CI test and deploy pipeline",
+            "description": "GitHub Actions workflow running tests on PRs with build/deploy steps for dev and production.",
+            "status": Completed,
+            "estimated_effort_hours": 4.0,
+        },
+        "observability": {
+            "title": "Complete Prometheus/Loki/Tempo/Grafana observability",
+            "description": "Finish OTLP traces to Tempo, Loki log shipping, Prometheus metrics, and Grafana dashboards; verify in Docker.",
+            "status": Partial,
+            "estimated_effort_hours": 5.0,
+        },
+        "alerting_on_user_impact": {
+            "title": "Tune user-impact alerting rules",
+            "description": "Actionable alerts on HTTP 5xx rate, p95 latency, failed analysis jobs, and endpoint downtime.",
+            "status": Partial,
+            "estimated_effort_hours": 3.0,
+        },
+        "on_call_agent": {
+            "title": "Harden bounded read-only on-call diagnosis",
+            "description": "Read-only On-Call agent over Prometheus/Loki/Tempo with evidence citations and safe remediation runbooks.",
+            "status": Outstanding,
+            "estimated_effort_hours": 5.0,
+        },
+    }
+
+
+def _create_dev_milestones_for_project(db, project, assessment_by_criterion_id, criteria) -> int:
+    """Create one DevelopmentMilestone per criterion; returns rows created.
+
+    INVARIANT: touches ONLY development_milestones (+ approval flags).
+    Never sets/alters CriterionAssessment.ai_proposed_points or
+    human_override_points — completing dev tasks never auto-awards scores.
+    """
+    from datetime import datetime, timezone
+
+    from app.models.models import DevelopmentMilestone
+    from app.schemas.enums import DevelopmentMilestoneStatus, MilestoneSource
+
+    specs = _default_dev_task_specs()
+    now = datetime.now(timezone.utc)
+    created = 0
+    for c in sorted(criteria, key=lambda x: (x.display_order or 0)):
+        am = assessment_by_criterion_id.get(c.id)
+        if am is None:
+            continue
+        spec = specs.get(c.code, {})
+        status = spec.get("status", DevelopmentMilestoneStatus.OUTSTANDING)
+        db.add(
+            DevelopmentMilestone(
+                project_id=project.id,
+                assessment_milestone_id=am.id,
+                title=spec.get("title", f"Implement {c.name}"),
+                description=spec.get("description", c.description),
+                status=status,
+                source=MilestoneSource.AI_GENERATED,
+                is_approved=True,
+                estimated_effort_hours=spec.get("estimated_effort_hours", 3.0),
+                display_order=c.display_order or 0,
+                completed_at=now if status == DevelopmentMilestoneStatus.COMPLETED else None,
+            )
+        )
+        created += 1
+    return created
+
+
 def seed_example_project(db: Session) -> None:
     """Seed DevTrack AI itself as the default example tracked project.
 
-    Idempotent: returns without changes if a project whose normalized
-    ``github_repo_url`` already matches the example repo URL exists.
-    Mirrors the POST /api/v1/projects creation loop (draft assessment
+    Idempotent: if a project whose normalized ``github_repo_url`` already
+    matches the example repo URL exists, backfills approval + development
+    milestones instead of duplicating. New projects are created with
+    approved assessment milestones and 12 development tasks.
+    Mirrors the POST /api/v1/projects creation loop (assessment
     milestones + one initial queued analysis run) without awarding any
-    assessment points or creating development milestones.
+    assessment points.
+
+    INVARIANT: seeding or completing ``DevelopmentMilestone`` rows MUST
+    NEVER set or alter ``CriterionAssessment.ai_proposed_points`` or
+    ``human_override_points``.
     """
     from app.models.models import (
         AnalysisRun,
         AssessmentMilestone,
+        DevelopmentMilestone,
         Project,
         Rubric,
         RubricCriterion,
@@ -122,17 +256,51 @@ def seed_example_project(db: Session) -> None:
         logger.warning("Example project seeding skipped: built-in rubric missing")
         return
 
-    target = _normalize_github_url(EXAMPLE_PROJECT_URL)
-    for (existing_url,) in db.query(Project.github_repo_url).all():
-        if _normalize_github_url(existing_url) == target:
-            return
-
     criteria = (
         db.query(RubricCriterion)
         .filter(RubricCriterion.rubric_id == rubric.id)
         .order_by(RubricCriterion.display_order)
         .all()
     )
+
+    target = _normalize_github_url(EXAMPLE_PROJECT_URL)
+    existing_project = None
+    for proj in db.query(Project).all():
+        if _normalize_github_url(proj.github_repo_url) == target:
+            existing_project = proj
+            break
+
+    if existing_project is not None:
+        # Idempotent backfill: approve + seed dev tasks if none exist.
+        # Never touches criterion_assessments (scores stay untouched).
+        assessments = (
+            db.query(AssessmentMilestone)
+            .filter(AssessmentMilestone.project_id == existing_project.id)
+            .all()
+        )
+        for am in assessments:
+            am.is_approved = True
+        existing_project.milestones_approved = True
+        db.flush()
+        assessment_by_criterion_id = {am.rubric_criterion_id: am for am in assessments}
+        dev_count = (
+            db.query(DevelopmentMilestone)
+            .filter(DevelopmentMilestone.project_id == existing_project.id)
+            .count()
+        )
+        if dev_count == 0 and assessments:
+            created = _create_dev_milestones_for_project(
+                db, existing_project, assessment_by_criterion_id, criteria
+            )
+            db.commit()
+            logger.info(
+                "Backfilled %d development milestones for example project %s",
+                created,
+                EXAMPLE_PROJECT_URL,
+            )
+        else:
+            db.commit()
+        return
 
     project = Project(
         name="DevTrack AI",
@@ -148,11 +316,11 @@ def seed_example_project(db: Session) -> None:
         diary_path=None,
         deployment_url=EXAMPLE_DEPLOYMENT_URL,
         daily_schedule_cron="0 6 * * *",
-        milestones_approved=False,
+        milestones_approved=True,
     )
     db.add(project)
     db.flush()
-    # Draft assessment milestones from official criteria (unapproved gate).
+    # Approved assessment milestones from official criteria.
     for i, c in enumerate(criteria):
         db.add(
             AssessmentMilestone(
@@ -160,10 +328,20 @@ def seed_example_project(db: Session) -> None:
                 rubric_criterion_id=c.id,
                 title=c.name,
                 max_points=c.max_points,
-                is_approved=False,
+                is_approved=True,
                 display_order=c.display_order or i,
             )
         )
+    db.flush()
+    assessments = (
+        db.query(AssessmentMilestone)
+        .filter(AssessmentMilestone.project_id == project.id)
+        .all()
+    )
+    assessment_by_criterion_id = {am.rubric_criterion_id: am for am in assessments}
+    _create_dev_milestones_for_project(
+        db, project, assessment_by_criterion_id, criteria
+    )
     # Seed an initial queued analysis run row (Track 3 worker picks it up).
     db.add(
         AnalysisRun(

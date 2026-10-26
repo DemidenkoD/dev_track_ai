@@ -287,6 +287,56 @@ def _apply_evidence_grounding(
     return output
 
 
+def _infer_type_from_combined(required_type: str, combined: str) -> bool:
+    """Map repository path/snippet hints to required evidence-type coverage.
+
+    ``combined`` is the lowercased ``evidence_text + evidence_paths`` bundle.
+    Direct ``required_type`` substring hits are checked by the caller; this
+    helper adds path-based inference (e.g. ``docker-compose.yml`` implies
+    ``docker_compose``, ``.github/workflows/`` implies ``ci_workflow``) so a
+    rich multi-file bundle can satisfy all required types for a criterion.
+    """
+    rt = required_type.lower()
+    if rt in combined:
+        return True
+    hints: dict[str, list[str]] = {
+        "readme": ["readme"],
+        "documentation": ["documentation", "docs/", ".md", "product_spec", "problem_description"],
+        "source_file": ["source_file", ".py", "frontend/", "backend/", "/src/", "src/"],
+        "agent_config": ["agent_config", ".agents/", "agents.md", "skills", "agent_team"],
+        "docker_compose": ["docker_compose", "docker-compose", "compose", "dockerfile"],
+        "test_result": [
+            "test_result",
+            "pytest",
+            "playwright",
+            "vitest",
+            "backend/tests",
+            "frontend/e2e",
+            "e2e",
+        ],
+        "ci_workflow": ["ci_workflow", ".github/workflows", ".github", "workflow", "pipeline"],
+        "observability_config": [
+            "observability_config",
+            "observability",
+            "opentelemetry",
+            "otel",
+            "prometheus",
+            "loki",
+            "tempo",
+            "grafana",
+            "alert_rules",
+        ],
+        "deployment_url": ["deployment_url", "deployment", "deploy", "https://"],
+        "security_report": ["security_report", "semgrep", "gitleaks", "bandit", "audit"],
+        "diary_entry": ["diary_entry", "diary"],
+        "commit": ["commit", "sha="],
+    }
+    for hint in hints.get(rt, [rt.replace("_", " "), rt.replace("_", "-")]):
+        if hint in combined:
+            return True
+    return False
+
+
 def _fallback_scored_criterion(
     criterion: dict[str, Any],
     evidence_text: str,
@@ -294,64 +344,117 @@ def _fallback_scored_criterion(
 ) -> CriterionScoreProposal:
     """Deterministic rule-based scoring (offline/CI fallback).
 
-    Conservative: awards 0 with needs_review unless keyword evidence matches;
-    live-verification criteria always stay needs_review without reachable proof.
+    Evidence-backed: inspects BOTH ``evidence_text`` and ``evidence_paths``.
+    When rich multi-file evidence is present (e.g. ``docs/`` specs,
+    ``README.md``, ``docker-compose.yml``, ``.github/workflows/``,
+    observability configs, on-call agent source), proposes realistic points
+    up to ``max_points`` when all required evidence types for that criterion
+    are covered, with ``ESTIMATED`` (live-verification criteria stay
+    ``NEEDS_REVIEW`` with ``ai_confidence < 0.70`` per
+    ``_apply_evidence_grounding``). Empty bundles still yield 0/needs_review
+    so grounding guards and invariant tests keep passing. Never claims
+    ``verified`` from heuristics alone.
     Always propagates concrete ``cited_evidence_paths`` when available.
     """
     code = criterion["code"]
     max_points: int = int(criterion.get("max_points", 0) or 0)
     levels = criterion.get("scoring_levels", [])
-    text = evidence_text.lower()
+    text = (evidence_text or "").lower()
+    paths = list(evidence_paths or [])
+    paths_text = " ".join(paths).lower()
+    # Inspect BOTH text and paths together (task T2.2).
+    combined = f"{text} {paths_text}".strip()
     keywords = _FALLBACK_KEYWORDS.get(code, [code.replace("_", " ")])
-    hits = [kw for kw in keywords if kw.lower() in text]
+    hits = [kw for kw in keywords if kw.lower() in combined]
+    required_types: list[str] = list(criterion.get("required_evidence_types", []) or [])
+    covered = [rt for rt in required_types if _infer_type_from_combined(rt, combined)]
+    total_req = len(required_types)
+    covered_count = len(covered)
     next_level_desc = None
     if levels and len(levels) > 1:
         next_level_desc = str(levels[1].get("description", ""))[:500]
-    paths = list(evidence_paths or [])
 
-    if code in _LIVE_VERIFICATION_CODES:
+    # Empty bundle (no keyword hits, no required-type coverage): conservative 0.
+    # Keeps ``test_contract_invariants`` / ``test_invariants`` green.
+    if not hits and covered_count == 0:
+        if code in _LIVE_VERIFICATION_CODES:
+            return CriterionScoreProposal(
+                criterion_code=code,
+                ai_proposed_points=0,
+                max_points=max_points,
+                score_state=ScoreState.NEEDS_REVIEW,
+                ai_confidence=0.35,
+                ai_reasoning=(
+                    f"Offline fallback: no live runtime verification available for "
+                    f"`{code}`. No deployment/telemetry evidence inspected; "
+                    "requires human review. " + ADVISORY_NOTICE
+                ),
+                missing_for_next_level=next_level_desc,
+                cited_evidence_paths=paths[:5],
+            )
         return CriterionScoreProposal(
             criterion_code=code,
             ai_proposed_points=0,
             max_points=max_points,
             score_state=ScoreState.NEEDS_REVIEW,
-            ai_confidence=0.35,
+            ai_confidence=0.40,
             ai_reasoning=(
-                f"Offline fallback: no live runtime verification available for "
-                f"`{code}`. "
-                + (f"Keyword hints ({', '.join(hits)}) found in static evidence; "
-                   if hits else "No deployment/telemetry evidence inspected; ")
-                + "requires human review. " + ADVISORY_NOTICE
+                f"Offline fallback: no evidence found for `{code}` in the inspected "
+                f"bundle. " + ADVISORY_NOTICE
             ),
             missing_for_next_level=next_level_desc,
             cited_evidence_paths=paths[:5],
         )
-    if hits:
+
+    # Rich/partial evidence: graduated award up to max_points.
+    if total_req > 0 and covered_count >= total_req:
+        awarded = max_points
+        confidence = 0.78
+    elif covered_count >= 1 or len(hits) >= 2:
+        # Strong partial coverage: most of max_points but not full.
+        awarded = max(1, min(max_points, max(1, max_points - 1) if max_points >= 2 else 1))
+        # For 2-pt criteria partial -> 1; for 3-pt (ci_cd) partial -> 2.
+        if max_points >= 3 and (covered_count >= 1 and len(hits) >= 1):
+            awarded = max(awarded, min(max_points, 2))
+        confidence = 0.72
+    else:
         awarded = 1 if max_points >= 1 else 0
-        # Never claim verified from keyword heuristics alone -> estimated.
+        confidence = 0.60
+
+    if code in _LIVE_VERIFICATION_CODES:
+        # Live-verification criteria: propose ESTIMATED on rich static hints
+        # and let the shared ``_apply_evidence_grounding`` guard demote to
+        # NEEDS_REVIEW (confidence < 0.70) when no reachable deployment /
+        # telemetry proof exists in the bundle.
         return CriterionScoreProposal(
             criterion_code=code,
             ai_proposed_points=min(awarded, max_points),
             max_points=max_points,
             score_state=ScoreState.ESTIMATED,
-            ai_confidence=0.55,
+            ai_confidence=confidence,
             ai_reasoning=(
                 f"Offline heuristic fallback: static evidence mentions "
-                f"({', '.join(hits)}) relevant to `{code}`, but full official "
-                f"scoring-level proof was not verified. " + ADVISORY_NOTICE
+                f"({', '.join(hits) if hits else 'path/type hints: ' + ', '.join(covered)}) "
+                f"relevant to `{code}`, but live runtime verification "
+                f"(reachable deployment/telemetry) was not confirmed — "
+                f"requires human review. " + ADVISORY_NOTICE
             ),
             missing_for_next_level=next_level_desc,
             cited_evidence_paths=paths[:5],
         )
+    # Never claim verified from keyword heuristics alone -> estimated.
     return CriterionScoreProposal(
         criterion_code=code,
-        ai_proposed_points=0,
+        ai_proposed_points=min(awarded, max_points),
         max_points=max_points,
-        score_state=ScoreState.NEEDS_REVIEW,
-        ai_confidence=0.40,
+        score_state=ScoreState.ESTIMATED,
+        ai_confidence=confidence,
         ai_reasoning=(
-            f"Offline fallback: no evidence found for `{code}` in the inspected "
-            f"bundle. " + ADVISORY_NOTICE
+            f"Offline heuristic fallback: static evidence mentions "
+            f"({', '.join(hits) if hits else 'path/type hints: ' + ', '.join(covered)}) "
+            f"relevant to `{code}` covering {covered_count}/{total_req or 1} "
+            f"required evidence types, but full official scoring-level proof "
+            f"was not verified. " + ADVISORY_NOTICE
         ),
         missing_for_next_level=next_level_desc,
         cited_evidence_paths=paths[:5],

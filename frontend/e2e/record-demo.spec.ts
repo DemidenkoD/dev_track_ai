@@ -9,7 +9,7 @@ import * as fs from 'fs';
  * and records a 720p HD video walkthrough to demo/devtrack_ai_demo.webm.
  */
 test.use({
-  baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5174',
+  baseURL: process.env.BASE_URL || process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5173',
   video: {
     mode: 'on',
     size: { width: 1280, height: 720 },
@@ -18,6 +18,8 @@ test.use({
 });
 
 test('record full DevTrack AI application demo walkthrough', async ({ page }) => {
+  test.skip(!process.env.RECORD_DEMO, 'Set RECORD_DEMO=1 to record walkthrough video');
+
   // Allow ample time for the full 7-scene guided video recording
   test.setTimeout(90000);
 

@@ -159,23 +159,22 @@ jobs:
           docker compose -f docker-compose.prod.yml images || true
       - name: Deploy to development
         env:
-          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST || secrets.VPS_IP }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_USER: ${{ secrets.VPS_USER || 'deploy' }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           echo "Deploying ${GITHUB_SHA} to development/staging…"
-          # --- Wire the real staging host, e.g.: ---
-          # if [ -z "$SSH_HOST" ]; then
-          #   echo "::notice::STAGING_SSH_HOST not configured — image build verified, deploy skipped."
-          #   exit 0
-          # fi
-          # ssh -o StrictHostKeyChecking=yes "$SSH_HOST" \
-          #   "cd /srv/devtrack-ai && git pull --ff-only && \
-          #    IMAGE_TAG=${IMAGE_TAG} docker compose -f docker-compose.prod.yml up -d --build"
-          # --- Or push to a registry first, then pull on staging: ---
-          # echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          # docker tag devtrack-ai-backend:${IMAGE_TAG} ghcr.io/${{ github.repository }}-backend:${IMAGE_TAG}
-          # docker push ghcr.io/${{ github.repository }}-backend:${IMAGE_TAG}
-          echo "development deploy step is a commented template until staging host secrets are configured."
+          if [ -z "$SSH_KEY" ] || [ -z "$SSH_HOST" ]; then
+            echo "::notice::VPS_SSH_KEY or STAGING_SSH_HOST not configured — image build verified, deploy skipped."
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SSH_USER}@${SSH_HOST}" \
+            "cd /srv/devtrack-ai && git pull --ff-only && \
+             IMAGE_TAG=${IMAGE_TAG} docker compose -f docker-compose.prod.yml up -d --build"
       - name: Health probe (staging)
         env:
           STAGING_URL: ${{ secrets.STAGING_URL }}
@@ -215,22 +214,22 @@ jobs:
         run: docker compose -f docker-compose.prod.yml build backend worker frontend
       - name: Deploy to production
         env:
-          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST || secrets.VPS_IP }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_USER: ${{ secrets.VPS_USER || 'deploy' }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           echo "Promoting main (${GITHUB_SHA}) to production after manual approval…"
-          # --- Wire the real prod host, e.g.: ---
-          # if [ -z "$SSH_HOST" ]; then
-          #   echo "::notice::PROD_SSH_HOST not configured — image build verified, deploy skipped."
-          #   exit 0
-          # fi
-          # ssh -o StrictHostKeyChecking=yes "$SSH_HOST" \
-          #   "cd /srv/devtrack-ai && git pull --ff-only && \
-          #    IMAGE_TAG=${IMAGE_TAG} docker compose -f docker-compose.prod.yml up -d --build"
-          # --- Or promote the registry image built in development: ---
-          # docker pull ghcr.io/${{ github.repository }}-backend:${IMAGE_TAG}
-          # IMAGE_TAG=${IMAGE_TAG} docker compose -f docker-compose.prod.yml up -d
-          echo "production deploy step is a commented template until prod host secrets are configured."
+          if [ -z "$SSH_KEY" ] || [ -z "$SSH_HOST" ]; then
+            echo "::notice::VPS_SSH_KEY or PROD_SSH_HOST not configured — image build verified, deploy skipped."
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SSH_USER}@${SSH_HOST}" \
+            "cd /srv/devtrack-ai && git pull --ff-only && \
+             IMAGE_TAG=${IMAGE_TAG} docker compose -f docker-compose.prod.yml up -d --build"
       - name: Health probe (production)
         env:
           PROD_URL: ${{ secrets.PROD_URL }}

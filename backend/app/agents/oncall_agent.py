@@ -209,6 +209,20 @@ class OnCallAgent:
                         )
                 except Exception:
                     pass
+                try:
+                    resp = client.get(
+                        f"{self.tempo_url}/api/search",
+                        params={"limit": 5},
+                    )
+                    if resp.status_code == 200:
+                        traces.append(
+                            {
+                                "query": "tempo:/api/search?limit=5",
+                                "excerpt": resp.text[:400],
+                            }
+                        )
+                except Exception:
+                    pass
         except Exception:
             pass
         return metrics, logs, traces

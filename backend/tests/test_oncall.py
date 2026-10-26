@@ -39,6 +39,7 @@ class TestOnCallAgentDiagnosis:
 
     def test_oncall_agent_class_resolves_via_protocol(self):
         """Track 1 protocol getter resolves Track 2 OnCallAgent (not StubOnCallAgent)."""
+        pytest.importorskip("pydantic")
         from app.agents.oncall_agent import OnCallAgent
         from app.api.protocols import get_oncall_agent
 

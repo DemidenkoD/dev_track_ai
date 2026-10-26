@@ -585,6 +585,8 @@ def _inspect_checkout(
         "AGENTS.md",
         "backend/AGENTS.md",
         "backend/app/agents/AGENTS.md",
+        "frontend/AGENTS.md",
+        "infra/AGENTS.md",
         "docs/specs/AGENT_TEAM_SPEC.md",
     ):
         _record_file_evidence(checkout, rel, "agent_config", evidence, seen)
@@ -599,7 +601,7 @@ def _inspect_checkout(
             except ValueError:
                 continue
             _record_file_evidence(checkout, rel, "agent_config", evidence, seen)
-    for rel in ("docs/PRODUCT_SPEC.md", "README.md"):
+    for rel in ("docs/PROBLEM_DESCRIPTION.md", "docs/PRODUCT_SPEC.md", "README.md"):
         _record_file_evidence(checkout, rel, "documentation", evidence, seen)
     for rel in ("docs/DIARY.md",):
         _record_file_evidence(checkout, rel, "diary_entry", evidence, seen)
@@ -620,7 +622,12 @@ def _inspect_checkout(
         _record_glob_evidence(checkout, pattern, "test_result", evidence, seen)
     for pattern in ("docker-compose*.yml", "docker-compose*.yaml"):
         _record_glob_evidence(checkout, pattern, "docker_compose", evidence, seen)
-    for rel in ("Dockerfile", "backend/Dockerfile", "frontend/Dockerfile"):
+    for rel in (
+        "Dockerfile",
+        "backend/Dockerfile",
+        "frontend/Dockerfile",
+        "infra/nginx/nginx.conf",
+    ):
         _record_file_evidence(checkout, rel, "docker_compose", evidence, seen)
     _record_glob_evidence(checkout, "*/Dockerfile", "docker_compose", evidence, seen)
     for pattern in (
@@ -956,20 +963,62 @@ def _persist_diary_snapshot(
         return
     try:
         excerpt = (result.diary_excerpt or "")[:2000]
+        completed_work: list[str] = [excerpt] if excerpt else []
+        blockers: list[str] = []
+        decisions: list[str] = []
+        next_steps: list[str] = []
+        git_alignment: str = (
+            f"Diary discovered at {result.diary_path}; "
+            f"commit {result.commit_sha or 'unknown'}."
+        )
+        discrepancies: list[Any] = []
+
+        try:
+            from app.agents import diary_analyst
+
+            analysis = diary_analyst.analyze_diary(
+                diary_text=result.diary_excerpt,
+                commits=[f"HEAD {result.commit_sha}"] if result.commit_sha else [],
+                discovered_path=str(result.diary_path),
+            )
+            if analysis:
+                if analysis.completed_work:
+                    completed_work = list(analysis.completed_work)
+                if analysis.blockers:
+                    blockers = list(analysis.blockers)
+                if analysis.decisions:
+                    decisions = list(analysis.decisions)
+                if analysis.next_steps:
+                    next_steps = list(analysis.next_steps)
+                if analysis.git_alignment_summary:
+                    git_alignment = analysis.git_alignment_summary
+                if analysis.discrepancies:
+                    discrepancies = [
+                        d if isinstance(d, dict) else (
+                            d.model_dump(mode="json")
+                            if hasattr(d, "model_dump")
+                            else (d.dict() if hasattr(d, "dict") else dict(d))
+                        )
+                        for d in analysis.discrepancies
+                    ]
+        except Exception as agent_exc:
+            logger.info(
+                "Diary analyst agent fallback (%s): %s",
+                type(agent_exc).__name__,
+                agent_exc,
+            )
+
         session.add(
             DiarySnapshot(
                 analysis_run_id=analysis_run_id,
                 project_id=project_id,
                 discovered_path=str(result.diary_path)[:512],
-                completed_work=[excerpt] if excerpt else [],
-                blockers=[],
-                decisions=[],
-                next_steps=[],
-                git_alignment_summary=(
-                    f"Diary discovered at {result.diary_path}; "
-                    f"commit {result.commit_sha or 'unknown'}."
-                ),
-                discrepancies=[],
+                completed_work=completed_work,
+                blockers=blockers,
+                decisions=decisions,
+                next_steps=next_steps,
+                git_alignment_summary=git_alignment,
+                discrepancies=discrepancies,
             )
         )
         session.flush()
@@ -993,23 +1042,79 @@ def _persist_security_report(
         logger.warning("Security persist skipped (%s).", type(exc).__name__)
         return
     try:
+        ai_summary = (
+            f"Deterministic scan: {len(result.security.findings)} findings "
+            f"({result.security.overall_status}); scanners: "
+            f"{', '.join(result.security.scanners_executed) or 'none'}. "
+            "Advisory only — see Security Reviewer guidance."
+        )
+        finding_explanations: dict[
+            tuple[str, str, str | None],
+            tuple[str | None, str | None, int | None],
+        ] = {}
+        finding_explanations_by_rule: dict[
+            tuple[str, str],
+            tuple[str | None, str | None, int | None],
+        ] = {}
+
+        try:
+            from app.agents import security_reviewer
+
+            review_fn = getattr(
+                security_reviewer,
+                "review_security_findings",
+                getattr(security_reviewer, "review_findings", None),
+            )
+            if callable(review_fn):
+                review_out = review_fn(
+                    raw_findings=result.security.findings,
+                    scanners_executed=result.security.scanners_executed,
+                    commit_sha=result.commit_sha,
+                )
+                if review_out:
+                    if getattr(review_out, "ai_executive_summary", None):
+                        ai_summary = review_out.ai_executive_summary
+                    for pf in getattr(review_out, "prioritized_findings", []) or []:
+                        scanner = str(getattr(pf, "scanner", ""))
+                        rule_id = str(getattr(pf, "rule_id", ""))
+                        file_path = getattr(pf, "file_path", None)
+                        val = (
+                            getattr(pf, "ai_explanation", None),
+                            getattr(pf, "ai_remediation", None),
+                            getattr(pf, "priority_rank", None),
+                        )
+                        finding_explanations[(scanner, rule_id, file_path)] = val
+                        if (scanner, rule_id) not in finding_explanations_by_rule:
+                            finding_explanations_by_rule[(scanner, rule_id)] = val
+        except Exception as agent_exc:
+            logger.info(
+                "Security reviewer agent fallback (%s): %s",
+                type(agent_exc).__name__,
+                agent_exc,
+            )
+
         report = SecurityReport(
             analysis_run_id=analysis_run_id,
             project_id=project_id,
             commit_sha=result.commit_sha or "unknown",
             overall_status=_security_status(result.security.overall_status),
             scanners_executed=list(result.security.scanners_executed or []),
-            ai_executive_summary=(
-                f"Deterministic scan: {len(result.security.findings)} findings "
-                f"({result.security.overall_status}); scanners: "
-                f"{', '.join(result.security.scanners_executed) or 'none'}. "
-                "Advisory only — see Security Reviewer guidance."
-            ),
+            ai_executive_summary=ai_summary,
         )
         session.add(report)
         session.flush()
         findings = []
         for rank, finding in enumerate(result.security.findings or [], start=1):
+            key = (
+                str(finding.scanner or ""),
+                str(finding.rule_id or ""),
+                finding.file_path,
+            )
+            fallback_key = (str(finding.scanner or ""), str(finding.rule_id or ""))
+            ai_exp, ai_rem, p_rank = finding_explanations.get(
+                key,
+                finding_explanations_by_rule.get(fallback_key, (None, None, rank)),
+            )
             findings.append(
                 SecurityFinding(
                     security_report_id=report.id,
@@ -1019,7 +1124,9 @@ def _persist_security_report(
                     file_path=finding.file_path,
                     line_number=finding.line_number,
                     raw_message=str(finding.message or ""),
-                    priority_rank=rank,
+                    ai_explanation=ai_exp,
+                    ai_remediation=ai_rem,
+                    priority_rank=p_rank or rank,
                 )
             )
         session.add_all(findings)
@@ -1068,51 +1175,109 @@ def _persist_recommendations(
     result: PipelineResult,
     evidence_ids: list[str],
 ) -> None:
-    """Derive advisory next actions from score gaps (never official grades)."""
-    gaps = []
-    for proposal in result.score_proposals or []:
-        try:
-            max_pts = int(proposal.get("max_points", 0) or 0)
-            proposed = int(proposal.get("ai_proposed_points", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        gap = max_pts - proposed
-        if gap > 0:
-            gaps.append((gap, proposal))
-    if not gaps:
-        return
+    """Derive advisory next actions (never official grades)."""
     try:
         from app.models.models import Recommendation  # type: ignore
     except Exception as exc:
         logger.warning("Recommendations persist skipped (%s).", type(exc).__name__)
         return
     try:
-        gaps.sort(key=lambda item: item[0], reverse=True)
-        rows = []
-        for rank, (gap, proposal) in enumerate(gaps[:5], start=1):
-            code = str(proposal.get("criterion_code", "unknown") or "unknown")
-            rows.append(
-                Recommendation(
-                    analysis_run_id=analysis_run_id,
-                    project_id=project_id,
-                    rank=rank,
-                    suggested_task=str(
-                        proposal.get("missing_for_next_level")
-                        or f"Advance {code} toward full points"
-                    )[:255],
-                    rationale=str(proposal.get("ai_reasoning", "") or "")[:2000]
-                    or "Advisory recommendation derived from score gap.",
-                    related_criterion_code=code,
-                    potential_points_delta=int(gap),
-                    priority=_recommendation_priority(gap),
-                    estimated_effort_hours=None,
-                    technical_risk=_risk_level("low"),
-                    supporting_evidence_ids=list(evidence_ids[:10]),
-                    is_completed=False,
-                )
+        mentor_recs = []
+        try:
+            from app.agents import project_mentor
+
+            mentor_fn = getattr(
+                project_mentor,
+                "evaluate_project_mentor",
+                getattr(project_mentor, "evaluate_project", None),
             )
-        session.add_all(rows)
-        session.flush()
+            if callable(mentor_fn):
+                mentor_out = mentor_fn(
+                    scorecard={"criteria_evaluations": result.score_proposals},
+                    security=result.security,
+                    deployment_status=(result.deployment or {}).get("target_url"),
+                    previous_commit_sha=result.previous_commit_sha,
+                    current_commit_sha=result.commit_sha,
+                    evidence_items=result.evidence,
+                )
+                if mentor_out and getattr(mentor_out, "recommendations", None):
+                    mentor_recs = list(mentor_out.recommendations)
+        except Exception as agent_exc:
+            logger.info(
+                "Project mentor agent fallback (%s): %s",
+                type(agent_exc).__name__,
+                agent_exc,
+            )
+
+        rows = []
+        if mentor_recs:
+            for item in mentor_recs[:5]:
+                pts_delta = int(getattr(item, "potential_points_delta", 0) or 0)
+                raw_effort = getattr(item, "estimated_effort_hours", 2.0)
+                if raw_effort is None:
+                    effort = 2.0
+                else:
+                    try:
+                        effort = float(raw_effort)
+                    except (TypeError, ValueError):
+                        effort = 2.0
+                risk = getattr(item, "technical_risk", "low")
+                rows.append(
+                    Recommendation(
+                        analysis_run_id=analysis_run_id,
+                        project_id=project_id,
+                        rank=int(getattr(item, "rank", len(rows) + 1)),
+                        suggested_task=str(getattr(item, "suggested_task", ""))[:255],
+                        rationale=str(getattr(item, "rationale", ""))[:2000]
+                        or "Advisory recommendation derived from project mentor.",
+                        related_criterion_code=str(
+                            getattr(item, "related_criterion_code", "general")
+                        )[:100],
+                        potential_points_delta=pts_delta,
+                        priority=_recommendation_priority(pts_delta),
+                        estimated_effort_hours=effort,
+                        technical_risk=_risk_level(risk),
+                        supporting_evidence_ids=list(evidence_ids[:10]),
+                        is_completed=False,
+                    )
+                )
+        else:
+            gaps = []
+            for proposal in result.score_proposals or []:
+                try:
+                    max_pts = int(proposal.get("max_points", 0) or 0)
+                    proposed = int(proposal.get("ai_proposed_points", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                gap = max_pts - proposed
+                if gap > 0:
+                    gaps.append((gap, proposal))
+            gaps.sort(key=lambda item: item[0], reverse=True)
+            for rank, (gap, proposal) in enumerate(gaps[:5], start=1):
+                code = str(proposal.get("criterion_code", "unknown") or "unknown")
+                rows.append(
+                    Recommendation(
+                        analysis_run_id=analysis_run_id,
+                        project_id=project_id,
+                        rank=rank,
+                        suggested_task=str(
+                            proposal.get("missing_for_next_level")
+                            or f"Advance {code} toward full points"
+                        )[:255],
+                        rationale=str(proposal.get("ai_reasoning", "") or "")[:2000]
+                        or "Advisory recommendation derived from score gap.",
+                        related_criterion_code=code,
+                        potential_points_delta=int(gap),
+                        priority=_recommendation_priority(gap),
+                        estimated_effort_hours=2.0,
+                        technical_risk=_risk_level("low"),
+                        supporting_evidence_ids=list(evidence_ids[:10]),
+                        is_completed=False,
+                    )
+                )
+        if rows:
+            session.add_all(rows)
+            session.flush()
     except Exception as exc:
         logger.warning("Recommendations persist failed (%s).", type(exc).__name__)
 

@@ -540,7 +540,7 @@ class TestSSRFBlockingLive:
         monitor = _import_or_skip("app.services.deployment_monitor")
         _public_dns(monkeypatch, monitor)
 
-        import httpx
+        httpx = pytest.importorskip("httpx")
 
         class _RedirectToMetadata:
             def __init__(self, *args, **kwargs):
@@ -568,7 +568,7 @@ class TestSSRFBlockingLive:
         monitor = _import_or_skip("app.services.deployment_monitor")
         _public_dns(monkeypatch, monitor)
 
-        import httpx
+        httpx = pytest.importorskip("httpx")
 
         class _EndlessRedirect:
             def __init__(self, *args, **kwargs):

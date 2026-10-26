@@ -198,33 +198,65 @@ export function EvidenceExplorer({
   );
 }
 
-export function DiaryPanel({ diary }: { diary: DiarySnapshot | null }): JSX.Element {
-  if (!diary) return <p className="muted">No diary snapshot yet.</p>;
+export interface DiaryPanelProps {
+  diary: DiarySnapshot | null;
+  summaryMarkdown?: string | null;
+}
+
+export function DiaryPanel({ diary, summaryMarkdown }: DiaryPanelProps): JSX.Element {
+  const hasSummary = Boolean(summaryMarkdown && summaryMarkdown.trim().length > 0);
+  if (!diary && !hasSummary) {
+    return <p className="muted">No diary snapshot yet.</p>;
+  }
+
   return (
-    <div className="card">
-      <p className="muted small">
-        Discovered at <code>{diary.discovered_path}</code> · {diary.created_at}
-      </p>
-      <div className="diary-grid">
-        <DiaryList title="Completed work" items={diary.completed_work} />
-        <DiaryList title="Blockers" items={diary.blockers} />
-        <DiaryList title="Decisions" items={diary.decisions} />
-        <DiaryList title="Next steps" items={diary.next_steps} />
-      </div>
-      <h4>Git alignment</h4>
-      <p>{diary.git_alignment_summary}</p>
-      {diary.discrepancies.length > 0 && (
-        <>
-          <h4>Discrepancies (diary claims vs git reality)</h4>
-          <ul>
-            {diary.discrepancies.map((d, i) => (
-              <li key={i}>
-                <strong>Claim:</strong> {d.claim} — <strong>Git reality:</strong> {d.git_reality}{' '}
-                <span className="badge badge-needs-review">{d.severity}</span>
-              </li>
-            ))}
-          </ul>
-        </>
+    <div className="stack">
+      {hasSummary && (
+        <article className="card" aria-label="Executive summary">
+          <header className="card-header">
+            <h3>Executive summary</h3>
+          </header>
+          <pre className="snippet snippet-full" tabIndex={0}>
+            {summaryMarkdown}
+          </pre>
+        </article>
+      )}
+
+      {diary ? (
+        <div className="card">
+          <p className="muted small">
+            Discovered at <code>{diary.discovered_path}</code> · {diary.created_at}
+          </p>
+          <div className="diary-grid">
+            <DiaryList title="Completed work" items={diary.completed_work ?? []} />
+            <DiaryList title="Blockers" items={diary.blockers ?? []} />
+            <DiaryList title="Decisions" items={diary.decisions ?? []} />
+            <DiaryList title="Next steps" items={diary.next_steps ?? []} />
+          </div>
+          <h4>Git alignment</h4>
+          <p>{diary.git_alignment_summary || 'No git alignment summary available.'}</p>
+          {(diary.discrepancies ?? []).length > 0 && (
+            <>
+              <h4>Discrepancies (diary claims vs git reality)</h4>
+              <ul>
+                {(diary.discrepancies ?? []).map((d, i) => (
+                  <li key={i}>
+                    <strong>Claim:</strong> {d.claim} — <strong>Git reality:</strong> {d.git_reality}{' '}
+                    <span
+                      className={`badge ${d.severity === 'critical' ? 'badge-critical' : 'badge-needs-review'}`}
+                    >
+                      {d.severity}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="card">
+          <p className="muted">No structured engineering diary snapshot discovered for this run.</p>
+        </div>
       )}
     </div>
   );

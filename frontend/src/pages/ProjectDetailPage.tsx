@@ -91,49 +91,67 @@ export function ProjectDetailPage(): JSX.Element {
     }
   }, [searchParams]);
 
-  const load = useCallback(async () => {
-    if (!projectId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [sc, ms, recs, diarySnap, sec, deps, runs] = await Promise.all([
-        fetchScorecard(projectId, selectedRunId === 'latest' ? undefined : selectedRunId).catch(
-          () => null,
-        ),
-        fetchMilestones(projectId).catch(() => null),
-        fetchRecommendations(projectId).catch(() => [] as Recommendation[]),
-        fetchDiary(projectId).catch(() => null),
-        fetchSecurityReport(projectId).catch(() => null),
-        fetchDeployments(projectId).catch(() => [] as DeploymentCheck[]),
-        listAnalyses(projectId).catch(() => [] as AnalysisRun[]),
-      ]);
-      setScorecard(sc);
-      setMilestones(ms);
-      setRecommendations(recs);
-      setDiary(diarySnap);
-      setSecurity(sec);
-      setDeployments(deps);
-      setAnalyses(runs);
-      if (sc) {
-        const fetchedEvidence = await fetchEvidence(projectId).catch(() => [] as EvidenceItem[]);
-        setEvidence(fetchedEvidence);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!projectId) return;
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        const [sc, ms, recs, diarySnap, sec, deps, runs] = await Promise.all([
+          fetchScorecard(projectId, selectedRunId === 'latest' ? undefined : selectedRunId).catch(
+            () => null,
+          ),
+          fetchMilestones(projectId).catch(() => null),
+          fetchRecommendations(projectId).catch(() => [] as Recommendation[]),
+          fetchDiary(projectId).catch(() => null),
+          fetchSecurityReport(projectId).catch(() => null),
+          fetchDeployments(projectId).catch(() => [] as DeploymentCheck[]),
+          listAnalyses(projectId).catch(() => [] as AnalysisRun[]),
+        ]);
+        setScorecard(sc);
+        setMilestones(ms);
+        setRecommendations(recs);
+        setDiary(diarySnap);
+        setSecurity(sec);
+        setDeployments(deps);
+        setAnalyses(runs);
+        if (sc) {
+          const fetchedEvidence = await fetchEvidence(projectId).catch(() => [] as EvidenceItem[]);
+          setEvidence(fetchedEvidence);
+        }
+        if (selectedRunId !== 'latest') {
+          const detail = await getAnalysis(projectId, selectedRunId).catch(() => null);
+          setSelectedRun(detail);
+        } else {
+          setSelectedRun(null);
+        }
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Failed to load project.');
+      } finally {
+        if (!silent) setLoading(false);
       }
-      if (selectedRunId !== 'latest') {
-        const detail = await getAnalysis(projectId, selectedRunId).catch(() => null);
-        setSelectedRun(detail);
-      } else {
-        setSelectedRun(null);
-      }
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load project.');
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId, selectedRunId]);
+    },
+    [projectId, selectedRunId],
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const latestRun = analyses[0];
+    const isPending = latestRun?.status === 'queued' || latestRun?.status === 'running';
+    if (!isPending) return;
+
+    const intervalId = window.setInterval(() => {
+      void load(true);
+      reloadProject();
+    }, 4000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [analyses, load, reloadProject]);
 
   async function handleSelectRun(runId: string): Promise<void> {
     setSelectedRunId(runId);
@@ -188,7 +206,7 @@ export function ProjectDetailPage(): JSX.Element {
     void load();
   }
 
-  if (projectLoading || loading) {
+  if (!project && (projectLoading || loading)) {
     return (
       <main className="page">
         <p aria-live="polite">Loading project…</p>
@@ -346,7 +364,16 @@ export function ProjectDetailPage(): JSX.Element {
       {tab === 'evidence' && (
         <EvidenceExplorer projectId={projectId} initialItems={evidence} runs={analyses} />
       )}
-      {tab === 'diary' && <DiaryPanel diary={diary} />}
+      {tab === 'diary' && (
+        <DiaryPanel
+          diary={diary}
+          summaryMarkdown={
+            selectedRun?.summary_markdown ??
+            analyses[0]?.summary_markdown ??
+            project.latest_summary_markdown
+          }
+        />
+      )}
       {tab === 'security' && <SecurityPanel report={security} />}
       {tab === 'deployments' && (
         <DeploymentsPanel
