@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -312,7 +313,19 @@ def run_bandit(target_dir: str | Path) -> tuple[bool, list[NormalizedFinding]]:
     return True, findings
 
 
-def _derive_status(findings: list[NormalizedFinding]) -> str:
+def _derive_status(
+    findings: list[NormalizedFinding],
+    scanners_executed: Sequence[str] | None = None,
+) -> str:
+    """Derive pass|warning|critical from findings — never pass-with-zero.
+
+    A run where NO scanner executed (all binaries missing / manifests absent)
+    is a coverage gap, not a clean bill of health: with zero findings AND
+    zero executed scanners the status is ``warning`` so the false-pass seen
+    in analysis ``a57dea1d`` (``scanners_executed=[]`` + ``pass``) can never
+    recur. Partial coverage (some executed, zero findings) still yields
+    ``pass``; the skipped names remain visible in ``scanners_skipped``.
+    """
     severities = {f.severity for f in findings}
     if severities & {"critical", "high"}:
         return "critical"
@@ -320,6 +333,8 @@ def _derive_status(findings: list[NormalizedFinding]) -> str:
         return "warning"
     if findings:
         return "warning" if severities & {"low"} else "pass"
+    if scanners_executed is not None and len(list(scanners_executed)) == 0:
+        return "warning"
     return "pass"
 
 
@@ -351,5 +366,5 @@ def run_all_scanners(target_dir: str | Path) -> ScanSummary:
             summary.findings.extend(findings)
         else:
             summary.scanners_skipped.append(name)
-    summary.overall_status = _derive_status(summary.findings)
+    summary.overall_status = _derive_status(summary.findings, summary.scanners_executed)
     return summary

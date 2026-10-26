@@ -349,11 +349,13 @@ def run_analysis_stages(
         logger.warning("Deployment stage failed (%s).", type(exc).__name__)
 
     if security is not None:
+        skipped = ", ".join(security.scanners_skipped) or "none"
         evidence.append(
             PipelineEvidence(
                 evidence_type="security_report",
-                title=f"Security scan: {len(security.findings)} findings ({security.overall_status})",
+                title=f"Security scan: {len(security.findings)} findings ({security.overall_status}; skipped: {skipped})",
                 path_or_url="scanners: " + ",".join(security.scanners_executed),
+                metadata={"scanners_skipped": list(security.scanners_skipped)},
             )
         )
     if diary_path:
@@ -688,10 +690,12 @@ def _build_summary(
         f"- Diary: {diary_path or 'not found'}",
     ]
     if security is not None:
+        skipped = ", ".join(security.scanners_skipped) or "none"
         lines.append(
             f"- Security: {security.overall_status} "
             f"({len(security.findings)} findings; "
-            f"scanners: {', '.join(security.scanners_executed) or 'none'})"
+            f"scanners: {', '.join(security.scanners_executed) or 'none'}; "
+            f"skipped: {skipped})"
         )
     if deployment:
         lines.append(
@@ -1045,9 +1049,16 @@ def _persist_security_report(
         ai_summary = (
             f"Deterministic scan: {len(result.security.findings)} findings "
             f"({result.security.overall_status}); scanners: "
-            f"{', '.join(result.security.scanners_executed) or 'none'}. "
+            f"{', '.join(result.security.scanners_executed) or 'none'}; "
+            f"skipped: {', '.join(result.security.scanners_skipped) or 'none'}. "
             "Advisory only — see Security Reviewer guidance."
         )
+        if not result.security.scanners_executed:
+            ai_summary += (
+                " No scanner executed (binaries missing or no auditable "
+                "manifests) — coverage gap, manual review required; "
+                "this is never a clean pass."
+            )
         finding_explanations: dict[
             tuple[str, str, str | None],
             tuple[str | None, str | None, int | None],

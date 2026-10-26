@@ -199,6 +199,14 @@ class Settings(BaseSettings):
     ANALYSIS_TIMEOUT_SECONDS: int = 300
     MAX_REPO_SIZE_MB: int = 250
 
+    # --- Phase 4 on-call Alertmanager webhook shared secret ---
+    # The POST /api/v1/oncall/webhook endpoint authenticates via
+    # `Authorization: Bearer <ALERTMANAGER_WEBHOOK_SECRET>` or the
+    # `X-Alertmanager-Secret` header (no user JWT). The raw value is
+    # never logged, printed, or included in errors/traces — only a
+    # boolean mismatch (401) is observable.
+    ALERTMANAGER_WEBHOOK_SECRET: str = "change-me-alertmanager-secret"
+
     @property
     def access_token_expire_seconds(self) -> int:
         return self.ACCESS_TOKEN_EXPIRE_MINUTES * 60

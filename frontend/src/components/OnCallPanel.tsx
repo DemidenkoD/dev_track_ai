@@ -1,154 +1,436 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { OnCallDiagnosisResponse } from '../types/api';
-import { diagnoseOnCall, ApiError } from '../api/client';
+import type {
+  OnCallDiagnosisResponse,
+  OnCallIncident,
+  OnCallIncidentDetail,
+  OnCallIncidentStatus,
+} from '../types/api';
+import {
+  acknowledgeIncident,
+  ApiError,
+  diagnoseOnCall,
+  getOnCallIncident,
+  listOnCallIncidents,
+} from '../api/client';
 import { AdvisoryBanner } from './badges';
 
-/**
- * Phase 4 — Bounded read-only On-Call diagnostics.
- * Invokes `POST /api/v1/oncall/diagnose` (read-only Prometheus/Loki/Tempo
- * inspection) exclusively via `api/client.ts`. The agent proposes safe,
- * human-approved remediation steps only; it never mutates infrastructure.
- */
-export function OnCallPanel({ defaultContextNotes }: { defaultContextNotes?: string }): JSX.Element {
-  const [alertName, setAlertName] = useState('HighAnalysisJobFailureRate');
-  const [timeWindow, setTimeWindow] = useState('30');
-  const [contextNotes, setContextNotes] = useState(defaultContextNotes ?? '');
-  const [diagnosis, setDiagnosis] = useState<OnCallDiagnosisResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+type StatusFilter = 'all' | OnCallIncidentStatus;
 
-  async function handleSubmit(event: FormEvent): Promise<void> {
+const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'firing', label: 'Active' },
+  { id: 'acknowledged', label: 'Acknowledged' },
+  { id: 'resolved', label: 'Resolved' },
+];
+
+/** Human-readable status label; raw `alert_name` stays visible but small. */
+function statusLabel(status: OnCallIncidentStatus): string {
+  if (status === 'firing') return 'Active';
+  if (status === 'acknowledged') return 'Acknowledged';
+  return 'Resolved';
+}
+
+function statusBadgeClass(status: OnCallIncidentStatus): string {
+  if (status === 'firing') return 'badge badge-critical';
+  if (status === 'acknowledged') return 'badge badge-estimated';
+  return 'badge badge-verified';
+}
+
+function severityBadgeClass(severity: string): string {
+  const s = severity.toLowerCase();
+  if (s === 'critical') return 'badge badge-critical';
+  if (s === 'high' || s === 'warning') return 'badge badge-needs-review';
+  if (s === 'medium') return 'badge badge-estimated';
+  return 'badge badge-unknown';
+}
+
+function formatDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * Phase 4b — Alert History tab (human-understandable, no manual alert typing).
+ *
+ * Default view is the persisted Alertmanager alerts history list (newest
+ * first) via `GET /api/v1/oncall/incidents`, exclusively through
+ * `api/client.ts`. Selecting a row loads the full diagnosis +
+ * remediation plan (`GET .../incidents/{id}`) with an acknowledge action
+ * (`POST .../incidents/{id}/acknowledge`). The agent is read-only and
+ * advisory: remediation steps are text to copy, never executed.
+ */
+export function OnCallPanel(): JSX.Element {
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [incidents, setIncidents] = useState<OnCallIncident[]>([]);
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<OnCallIncidentDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const [note, setNote] = useState('');
+  const [ackLoading, setAckLoading] = useState(false);
+  const [ackError, setAckError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Debug-only compat helper (collapsed, not prominent).
+  const [debugAlert, setDebugAlert] = useState('HighAnalysisJobFailureRate');
+  const [debugNotes, setDebugNotes] = useState('');
+  const [debugResult, setDebugResult] = useState<OnCallDiagnosisResponse | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugError, setDebugError] = useState<string | null>(null);
+
+  const loadList = useCallback(
+    async (silent = false) => {
+      if (!silent) setListLoading(true);
+      setListError(null);
+      try {
+        const rows = await listOnCallIncidents(statusFilter, 50);
+        setIncidents(rows);
+      } catch (err) {
+        if (!silent) setListError(err instanceof ApiError ? err.message : 'Failed to load alert history.');
+      } finally {
+        if (!silent) setListLoading(false);
+      }
+    },
+    [statusFilter],
+  );
+
+  useEffect(() => {
+    void loadList();
+  }, [loadList]);
+
+  // Auto-refresh the list every 10s while any alert is still active,
+  // mirroring the ProjectDetailPage 4s-while-pending polling pattern.
+  const hasActive = incidents.some((i) => i.status === 'firing');
+  useEffect(() => {
+    if (!hasActive) return;
+    const intervalId = window.setInterval(() => {
+      void loadList(true);
+    }, 10000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [hasActive, loadList]);
+
+  async function handleSelect(incident: OnCallIncident): Promise<void> {
+    if (selectedId === incident.id && detail) return;
+    setSelectedId(incident.id);
+    setDetail(null);
+    setDetailError(null);
+    setAckError(null);
+    setNote('');
+    setCopied(false);
+    setDetailLoading(true);
+    try {
+      const full = await getOnCallIncident(incident.id);
+      setDetail(full);
+    } catch (err) {
+      setDetailError(err instanceof ApiError ? err.message : 'Failed to load alert details.');
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function handleAcknowledge(): Promise<void> {
+    if (!detail) return;
+    setAckLoading(true);
+    setAckError(null);
+    try {
+      const updated = await acknowledgeIncident(detail.id, {
+        note: note.trim() || null,
+      });
+      setDetail(updated);
+      setIncidents((prev) =>
+        prev.map((row) =>
+          row.id === updated.id
+            ? { ...row, status: updated.status, acknowledge_note: updated.acknowledge_note }
+            : row,
+        ),
+      );
+      setNote('');
+    } catch (err) {
+      setAckError(err instanceof ApiError ? err.message : 'Failed to acknowledge alert.');
+    } finally {
+      setAckLoading(false);
+    }
+  }
+
+  async function handleCopyRunbook(): Promise<void> {
+    if (!detail) return;
+    const text = detail.diagnosis.recommended_actions
+      .map((step, i) => `${i + 1}. ${step}`)
+      .join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  async function handleDebugDiagnose(event: FormEvent): Promise<void> {
     event.preventDefault();
-    setError(null);
-    setDiagnosis(null);
-    if (!alertName.trim()) {
-      setError('Alert name is required.');
+    setDebugError(null);
+    setDebugResult(null);
+    if (!debugAlert.trim()) {
+      setDebugError('Alert name is required.');
       return;
     }
-    const minutes = timeWindow.trim() === '' ? undefined : Number(timeWindow);
-    if (minutes !== undefined && (!Number.isInteger(minutes) || minutes <= 0)) {
-      setError('Time window must be a positive integer number of minutes (or blank).');
-      return;
-    }
-    setLoading(true);
+    setDebugLoading(true);
     try {
       const result = await diagnoseOnCall({
-        alert_name: alertName.trim(),
-        time_window_minutes: minutes,
-        context_notes: contextNotes.trim() || null,
+        alert_name: debugAlert.trim(),
+        time_window_minutes: 30,
+        context_notes: debugNotes.trim() || null,
       });
-      setDiagnosis(result);
+      setDebugResult(result);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'On-call diagnosis failed.');
+      setDebugError(err instanceof ApiError ? err.message : 'On-call diagnosis failed.');
     } finally {
-      setLoading(false);
+      setDebugLoading(false);
     }
   }
 
   return (
-    <section aria-label="On-call diagnostics" className="stack">
-      <AdvisoryBanner detail="On-Call diagnosis is read-only and advisory. It inspects telemetry and proposes safe human-approved remediation steps — it never changes infrastructure." />
-      <form className="card stack" onSubmit={(e) => void handleSubmit(e)}>
-        <h2>On-call diagnosis (read-only)</h2>
-        <label>
-          Alert name
-          <input
-            value={alertName}
-            onChange={(e) => setAlertName(e.target.value)}
-            placeholder="HighAnalysisJobFailureRate"
-            required
-          />
-        </label>
-        <div className="filter-row">
-          <label>
-            Time window (minutes)
-            <input
-              type="number"
-              min={1}
-              value={timeWindow}
-              onChange={(e) => setTimeWindow(e.target.value)}
-              placeholder="30"
-            />
-          </label>
+    <section aria-label="Alert history" className="stack">
+      <AdvisoryBanner detail="Alert History is read-only and advisory. Diagnoses explain past alerts and propose human-approved next steps — nothing is executed automatically." />
+
+      <div className="card stack">
+        <header className="card-header">
+          <h2>Alert History</h2>
+          <button className="btn btn-secondary" onClick={() => void loadList()} disabled={listLoading}>
+            {listLoading ? 'Loading…' : 'Refresh'}
+          </button>
+        </header>
+
+        <div className="filter-row" role="group" aria-label="Filter alerts by status">
+          {STATUS_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              className={statusFilter === f.id ? 'tab tab-active' : 'tab'}
+              onClick={() => setStatusFilter(f.id)}
+              aria-pressed={statusFilter === f.id}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
-        <label>
-          Context notes (optional)
-          <textarea
-            value={contextNotes}
-            onChange={(e) => setContextNotes(e.target.value)}
-            rows={3}
-            placeholder="Worker jobs timing out on large repositories…"
-          />
-        </label>
-        {error && (
+
+        {listError && (
           <p className="error" role="alert">
-            {error}
+            {listError}
           </p>
         )}
-        <div className="modal-actions">
-          <button type="submit" className="btn btn-primary" disabled={loading}>
-            {loading ? 'Diagnosing…' : 'Run read-only diagnosis'}
-          </button>
-        </div>
-      </form>
 
-      {diagnosis && (
-        <article className="card stack" aria-label="Diagnosis result" aria-live="polite">
-          <header className="card-header">
-            <h3>Diagnosis</h3>
-            {diagnosis.read_only_verified ? (
-              <span className="badge badge-verified" title="The agent performed read-only inspection only">
-                Read-only verified
-              </span>
-            ) : (
-              <span className="badge badge-needs-review">Read-only unverified</span>
-            )}
-          </header>
-          <div>
-            <h4>Incident summary</h4>
-            <p>{diagnosis.incident_summary}</p>
-          </div>
-          <div>
-            <h4>Root-cause hypothesis</h4>
-            <p>{diagnosis.root_cause_hypothesis}</p>
-            <p className="muted small">Confidence: {(diagnosis.confidence * 100).toFixed(0)}%</p>
-            <progress value={diagnosis.confidence} max={1} aria-label="Diagnosis confidence" />
-          </div>
-          <div>
-            <h4>Evidence citations ({diagnosis.evidence_citations.length})</h4>
-            {diagnosis.evidence_citations.length === 0 ? (
-              <p className="muted small">No telemetry citations returned.</p>
-            ) : (
-              <ul className="evidence-list">
-                {diagnosis.evidence_citations.map((cite, i) => (
-                  <li key={i} className="card evidence-row">
-                    <span className="badge badge-unknown">{cite.source}</span>
-                    <div className="evidence-body">
-                      <code className="small">{cite.query}</code>
-                      <pre className="snippet snippet-full" tabIndex={0}>
-                        {cite.excerpt}
-                      </pre>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div>
-            <h4>Recommended actions (human approval required)</h4>
-            {diagnosis.recommended_actions.length === 0 ? (
-              <p className="muted small">No actions recommended.</p>
-            ) : (
-              <ol>
-                {diagnosis.recommended_actions.map((action, i) => (
-                  <li key={i}>{action}</li>
-                ))}
-              </ol>
-            )}
-          </div>
+        {listLoading ? (
+          <p aria-live="polite">Loading alerts…</p>
+        ) : incidents.length === 0 ? (
+          <p className="muted" aria-live="polite">
+            No alerts yet — system healthy
+          </p>
+        ) : (
+          <ul className="run-list" aria-label="Alerts, newest first">
+            {incidents.map((incident) => (
+              <li key={incident.id}>
+                <button
+                  className={selectedId === incident.id ? 'tab tab-active' : 'tab'}
+                  onClick={() => void handleSelect(incident)}
+                  aria-expanded={selectedId === incident.id}
+                  style={{ width: '100%', textAlign: 'left' }}
+                >
+                  <span className={statusBadgeClass(incident.status)}>{statusLabel(incident.status)}</span>{' '}
+                  <span className={severityBadgeClass(incident.severity)}>{incident.severity}</span>{' '}
+                  <strong>{incident.service}</strong>{' '}
+                  <span className="muted small">{incident.alert_name}</span>
+                  <br />
+                  <span className="muted small">
+                    Started {formatDate(incident.starts_at)} · Confidence{' '}
+                    {(incident.confidence * 100).toFixed(0)}%
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {selectedId && (
+        <article className="card stack" aria-label="Alert details" aria-live="polite">
+          {detailLoading && <p>Loading alert details…</p>}
+          {detailError && (
+            <p className="error" role="alert">
+              {detailError}
+            </p>
+          )}
+          {detail && (
+            <>
+              <header className="card-header">
+                <h3>
+                  {statusLabel(detail.status)} — {detail.service}{' '}
+                  <span className="muted small">{detail.alert_name}</span>
+                </h3>
+                <span className={statusBadgeClass(detail.status)}>{statusLabel(detail.status)}</span>
+              </header>
+              <p className="muted small">
+                Started {formatDate(detail.starts_at)}
+                {detail.ends_at ? ` · Ended ${formatDate(detail.ends_at)}` : ' · Still active'}
+              </p>
+
+              {detail.diagnosis.read_only_verified ? (
+                <p>
+                  <span
+                    className="badge badge-verified"
+                    title="The agent performed read-only inspection only"
+                  >
+                    Read-only — human must approve
+                  </span>
+                </p>
+              ) : (
+                <p>
+                  <span className="badge badge-needs-review">Read-only unverified</span>
+                </p>
+              )}
+
+              <div>
+                <h4>What happened</h4>
+                <p>{detail.diagnosis.incident_summary || 'No summary available yet.'}</p>
+              </div>
+
+              <div>
+                <h4>Likely cause</h4>
+                <p>{detail.diagnosis.root_cause_hypothesis || 'No hypothesis available yet.'}</p>
+                <p className="muted small">
+                  Confidence: {(detail.diagnosis.confidence * 100).toFixed(0)}%
+                </p>
+                <progress
+                  value={detail.diagnosis.confidence}
+                  max={1}
+                  aria-label="Diagnosis confidence"
+                />
+              </div>
+
+              <div>
+                <h4>Supporting evidence ({detail.diagnosis.evidence_citations.length})</h4>
+                {detail.diagnosis.evidence_citations.length === 0 ? (
+                  <p className="muted small">No telemetry citations returned.</p>
+                ) : (
+                  <ul className="evidence-list">
+                    {detail.diagnosis.evidence_citations.map((cite, i) => (
+                      <li key={i} className="card evidence-row">
+                        <span className="badge badge-unknown">{cite.source}</span>
+                        <div className="evidence-body">
+                          <code className="small">{cite.query}</code>
+                          <pre className="snippet snippet-full" tabIndex={0}>
+                            {cite.excerpt}
+                          </pre>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div>
+                <h4>Suggested next steps (human approval required)</h4>
+                {detail.diagnosis.recommended_actions.length === 0 ? (
+                  <p className="muted small">No actions recommended.</p>
+                ) : (
+                  <>
+                    <ol>
+                      {detail.diagnosis.recommended_actions.map((action, i) => (
+                        <li key={i}>{action}</li>
+                      ))}
+                    </ol>
+                    <button className="btn btn-secondary" onClick={() => void handleCopyRunbook()}>
+                      {copied ? 'Copied to clipboard' : 'Copy steps as text'}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <div className="card stack">
+                <h4>Acknowledge this alert</h4>
+                {detail.acknowledge_note && (
+                  <p className="muted small">Previous note: {detail.acknowledge_note}</p>
+                )}
+                <label>
+                  Note (optional)
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    rows={2}
+                    placeholder="Investigating 5xx spike…"
+                  />
+                </label>
+                {ackError && (
+                  <p className="error" role="alert">
+                    {ackError}
+                  </p>
+                )}
+                <div className="modal-actions">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => void handleAcknowledge()}
+                    disabled={ackLoading || detail.status === 'acknowledged'}
+                  >
+                    {detail.status === 'acknowledged'
+                      ? 'Acknowledged'
+                      : ackLoading
+                        ? 'Acknowledging…'
+                        : 'Acknowledge'}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </article>
       )}
+
+      <details className="card stack">
+        <summary className="muted small">Test diagnose (debug only, not part of the History view)</summary>
+        <form className="stack" onSubmit={(e) => void handleDebugDiagnose(e)}>
+          <label>
+            Alert name
+            <input
+              value={debugAlert}
+              onChange={(e) => setDebugAlert(e.target.value)}
+              placeholder="HighAnalysisJobFailureRate"
+            />
+          </label>
+          <label>
+            Context notes (optional)
+            <textarea
+              value={debugNotes}
+              onChange={(e) => setDebugNotes(e.target.value)}
+              rows={2}
+              placeholder="Worker jobs timing out on large repositories…"
+            />
+          </label>
+          {debugError && (
+            <p className="error" role="alert">
+              {debugError}
+            </p>
+          )}
+          <div className="modal-actions">
+            <button type="submit" className="btn btn-secondary" disabled={debugLoading}>
+              {debugLoading ? 'Diagnosing…' : 'Run read-only diagnosis'}
+            </button>
+          </div>
+        </form>
+        {debugResult && (
+          <div className="stack">
+            <p>{debugResult.incident_summary}</p>
+            <p className="muted small">{debugResult.root_cause_hypothesis}</p>
+          </div>
+        )}
+      </details>
     </section>
   );
 }

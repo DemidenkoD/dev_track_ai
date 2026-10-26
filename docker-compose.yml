@@ -229,6 +229,49 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    depends_on:
+      alertmanager:
+        condition: service_started
+    networks: [app]
+
+  # Alert router: Prometheus -> webhook POST to backend, so the History tab
+  # gains real alert history with no manual trigger. Port 9093 is internal
+  # only (expose, no host ports). Capped for the 4GB VPS budget.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: devtrack-alertmanager
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--cluster.listen-address="   # single node: disable HA clustering (no :9094)
+    # REQUIRED env (Track 1 reads the same var in backend):
+    # ALERTMANAGER_WEBHOOK_SECRET — shared secret the backend webhook verifies
+    # via `Authorization: Bearer <secret>`. Dev-only default keeps
+    # `docker compose config` green with no .env entry. PRODUCTION: set a
+    # strong random value in host .env — never commit the real value.
+    environment:
+      ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET:-changeme-dev-only}
+    volumes:
+      - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    expose:
+      - "9093"
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
     networks: [app]
 
   loki:
@@ -305,6 +348,7 @@ services:
 volumes:
   pgdata:
   prom_data:
+  alertmanager_data:
   loki_data:
   tempo_data:
   grafana_data:

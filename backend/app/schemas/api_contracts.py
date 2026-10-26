@@ -18,6 +18,7 @@ from app.schemas.enums import (
     DevelopmentMilestoneStatus,
     EvidenceType,
     MilestoneSource,
+    OnCallIncidentStatus,
     PriorityLevel,
     ProjectStatus,
     RiskLevel,
@@ -472,4 +473,96 @@ class OnCallDiagnosisResponse(BaseModel):
     evidence_citations: list[TelemetryCitation]
     recommended_actions: list[str]
     read_only_verified: bool = True
+
+
+# ------------------------------------------------------------------------------
+# Phase 4b: On-Call History Tab (Alertmanager webhook -> persisted incidents)
+# ------------------------------------------------------------------------------
+class AlertmanagerAlertLabels(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    alertname: str
+    severity: str | None = "unknown"
+    service: str | None = "unknown"
+
+
+class AlertmanagerAlertAnnotations(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    summary: str | None = None
+    description: str | None = None
+    runbook: str | None = None
+    runbook_url: str | None = None
+
+
+class AlertmanagerAlert(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str = "firing"
+    labels: AlertmanagerAlertLabels
+    annotations: AlertmanagerAlertAnnotations = Field(
+        default_factory=AlertmanagerAlertAnnotations
+    )
+    startsAt: datetime
+    endsAt: datetime | None = None
+    fingerprint: str
+    generatorURL: str | None = None
+
+
+class AlertmanagerWebhookPayload(BaseModel):
+    """Native Alertmanager webhook body (docs/specs/API_CONTRACT.md §8)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    receiver: str = ""
+    status: str = "firing"
+    alerts: list[AlertmanagerAlert] = Field(default_factory=list)
+    groupKey: str | None = None
+    externalURL: str | None = None
+    version: str | None = None
+
+
+class OnCallIncidentSchema(BaseModel):
+    """List item for GET /api/v1/oncall/incidents (History tab)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    alert_name: str
+    severity: str
+    service: str
+    status: OnCallIncidentStatus
+    fingerprint: str
+    starts_at: datetime
+    ends_at: datetime | None = None
+    confidence: float = 0.0
+    read_only_verified: bool = True
+    acknowledge_note: str | None = None
+    project_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OnCallIncidentDetailSchema(OnCallIncidentSchema):
+    """Detail view with redacted payload + full diagnosis (remediation text only)."""
+
+    alert_payload_json: dict[str, Any] = Field(default_factory=dict)
+    diagnosis: OnCallDiagnosisResponse = Field(
+        default_factory=lambda: OnCallDiagnosisResponse(
+            incident_summary="",
+            root_cause_hypothesis="",
+            confidence=0.0,
+            evidence_citations=[],
+            recommended_actions=[],
+            read_only_verified=True,
+        )
+    )
+
+
+class OnCallWebhookResponse(BaseModel):
+    incidents: list[OnCallIncidentSchema] = Field(default_factory=list)
+
+
+class AcknowledgeRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
 

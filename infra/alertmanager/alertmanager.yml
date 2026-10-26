@@ -1,0 +1,68 @@
+# DevTrack AI — Alertmanager routing: Prometheus user-impact alerts -> backend webhook.
+#
+# Flow (Phase 4 / on-call-diagnostics skill):
+#   prometheus evaluates infra/prometheus/alert_rules.yml
+#   (group `devtrack-user-impact`: HighHttp5xxErrorRate, HighApiLatencyP95,
+#   AnalysisWorkerJobFailures, TargetDeploymentDown)
+#   -> Alertmanager groups/dedupes/throttles here
+#   -> POSTs the alert payload to Track 1's POST /api/v1/oncall/webhook
+#      (http://backend:8000/...) so alert history is recorded and the
+#      History tab has REAL history with no manual trigger.
+#
+# AUTH SCHEME — HEADER (Track 1 must match this):
+#   Authorization: Bearer <ALERTMANAGER_WEBHOOK_SECRET>
+#   Implemented via webhook http_config.authorization below (type defaults
+#   to Bearer, so the header is `Bearer <credentials>`). Track 1's webhook
+#   endpoint must read the SAME env var (ALERTMANAGER_WEBHOOK_SECRET) and
+#   compare it against the Bearer token. Shared-secret auth; no user JWTs.
+#
+# ENV TEMPLATING NOTES (image: prom/alertmanager:v0.27.0):
+#   - This binary expands $VAR / ${VAR} in the config file at load time
+#     (os.ExpandEnv semantics). The `:-default` Bash-style fallback is NOT
+#     supported by that expander, so the dev-only default
+#     (`changeme-dev-only`) lives in the compose `environment:` mapping
+#     (compose DOES support `:-`), which guarantees the variable is always
+#     set inside the container. Never commit a real secret value here or in
+#     compose — production sets ALERTMANAGER_WEBHOOK_SECRET in host .env.
+#   - FALLBACK (documented, not active): if a future Alertmanager version
+#     drops header support, switch to a query-param secret:
+#       url: 'http://backend:8000/api/v1/oncall/webhook?secret=${ALERTMANAGER_WEBHOOK_SECRET}'
+#     (Track 1 would then read the `secret` query param instead of the
+#     Bearer header.) Header scheme is preferred: secrets stay out of URLs,
+#     hence out of access logs and Loki/Tempo telemetry.
+#
+# RETRY: Alertmanager retries failed webhook deliveries with exponential
+#   backoff internally (no config knob); group_wait / group_interval /
+#   repeat_interval below govern batching cadence, and send_resolved closes
+#   the loop on flapping/lingering alerts.
+# Telemetry MUST NOT contain emails, JWTs, or API keys (infra/AGENTS.md) —
+#   this file carries only the webhook shared-secret reference, never PII.
+global:
+  # Backstop resolve timeout (Prometheus alerts always carry EndsAt).
+  resolve_timeout: 5m
+
+route:
+  receiver: devtrack-webhook
+  group_by: ["alertname", "service", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # Explicit pin for the devtrack-user-impact rule group: all four alerts
+    # carry severity critical|warning. The root receiver is identical, so
+    # this is a documentation anchor + future split point (e.g. a paging
+    # receiver for criticals).
+    - receiver: devtrack-webhook
+      matchers:
+        - 'severity =~ "critical|warning"'
+      continue: false
+
+receivers:
+  - name: devtrack-webhook
+    webhook_configs:
+      - url: "http://backend:8000/api/v1/oncall/webhook"
+        send_resolved: true
+        http_config:
+          authorization:
+            credentials: "${ALERTMANAGER_WEBHOOK_SECRET}"
+        max_alerts: 0

@@ -9,6 +9,7 @@
  * `backend/app/schemas/api_contracts.py` (see `src/types/api.ts`).
  */
 import type {
+  AcknowledgeRequest,
   AnalysisRun,
   AssessmentMilestone,
   CriterionAssessment,
@@ -25,6 +26,9 @@ import type {
   MilestoneApprovalRequest,
   OnCallDiagnoseRequest,
   OnCallDiagnosisResponse,
+  OnCallIncident,
+  OnCallIncidentDetail,
+  OnCallIncidentStatus,
   ProjectCreateRequest,
   ProjectDetail,
   ProjectMilestonesResponse,
@@ -44,6 +48,8 @@ import type {
 import {
   DEMO_DASHBOARD,
   DEMO_DEPLOYMENTS,
+  DEMO_INCIDENT_DETAIL,
+  DEMO_INCIDENTS,
   DEMO_MILESTONES,
   DEMO_ONCALL,
   DEMO_PROJECT,
@@ -172,6 +178,8 @@ function getDemoFallback<T>(path: string): T | undefined {
   if (path === '/api/v1/rubrics') return DEMO_RUBRICS as unknown as T;
   if (path.startsWith('/api/v1/rubrics/')) return { ...DEMO_RUBRICS[0], criteria: [] } as unknown as T;
   if (path === '/api/v1/oncall/diagnose') return DEMO_ONCALL as unknown as T;
+  if (path === '/api/v1/oncall/incidents') return DEMO_INCIDENTS as unknown as T;
+  if (path.startsWith('/api/v1/oncall/incidents/')) return DEMO_INCIDENT_DETAIL as unknown as T;
   return undefined;
 }
 
@@ -466,9 +474,13 @@ export async function triggerDeploymentCheck(
 }
 
 // ---------------------------------------------------------------------------
-// On-call diagnostics (Phase 4, read-only)
+// On-call diagnostics (Phase 4, read-only) + Alert History (Phase 4b)
 // ---------------------------------------------------------------------------
 
+/**
+ * Backwards-compat manual diagnosis helper. The History tab below replaces
+ * manual `alert_name` typing in the primary UI; this stays for debug use.
+ */
 export async function diagnoseOnCall(
   payload: OnCallDiagnoseRequest,
 ): Promise<OnCallDiagnosisResponse> {
@@ -476,6 +488,40 @@ export async function diagnoseOnCall(
     method: 'POST',
     body: payload,
   });
+}
+
+/**
+ * Lists persisted Alertmanager incidents for the History tab (newest first).
+ * `status` filters to `firing` | `acknowledged` | `resolved`; `limit` is 1–200.
+ */
+export async function listOnCallIncidents(
+  status?: OnCallIncidentStatus | 'all',
+  limit?: number,
+): Promise<OnCallIncident[]> {
+  return request<OnCallIncident[]>('/api/v1/oncall/incidents', {
+    query: {
+      status: status == null || status === 'all' ? undefined : status,
+      limit,
+    },
+  });
+}
+
+/** Returns a single incident with its redacted payload + full diagnosis. */
+export async function getOnCallIncident(incidentId: string): Promise<OnCallIncidentDetail> {
+  return request<OnCallIncidentDetail>(
+    `/api/v1/oncall/incidents/${encodeURIComponent(incidentId)}`,
+  );
+}
+
+/** Marks an incident `acknowledged` with an optional human note. */
+export async function acknowledgeIncident(
+  incidentId: string,
+  payload: AcknowledgeRequest,
+): Promise<OnCallIncidentDetail> {
+  return request<OnCallIncidentDetail>(
+    `/api/v1/oncall/incidents/${encodeURIComponent(incidentId)}/acknowledge`,
+    { method: 'POST', body: payload },
+  );
 }
 
 export type { AssessmentMilestone };

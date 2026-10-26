@@ -1,9 +1,9 @@
 """SQLAlchemy 2.0 ORM models for all tables in docs/specs/DATABASE_SCHEMA.md.
 
-Covers §3.1–3.12: rubrics, rubric_criteria, projects, assessment_milestones,
+Covers §3.1–3.13: rubrics, rubric_criteria, projects, assessment_milestones,
 development_milestones, analysis_runs, evidence_items, criterion_assessments,
 diary_snapshots, security_reports, security_findings, deployment_checks,
-recommendations (13 tables).
+recommendations (13 tables) + oncall_incidents (§3.13, history tab).
 
 Portability: UUID PKs via sqlalchemy.Uuid, enums with native_enum=False
 + values_callable storing lowercase wire VALUES (not NAMES), JSON columns
@@ -15,6 +15,8 @@ INVARIANTS (backend/AGENTS.md §2):
   must NEVER auto-award criterion_assessments points (enforced in endpoints).
 - Score override preservation: ai_proposed_points/ai_reasoning are immutable;
   only human_override_* + score_state + overridden_at change on override.
+- Advisory read-only on-call: incidents store recommended_actions text only;
+  remediation is never executed by Track 1.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from app.schemas.enums import (
     DevelopmentMilestoneStatus,
     EvidenceType,
     MilestoneSource,
+    OnCallIncidentStatus,
     PriorityLevel,
     ProjectStatus,
     RiskLevel,
@@ -546,3 +549,43 @@ class Recommendation(Base):
     is_completed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     analysis_run: Mapped[AnalysisRun] = relationship(back_populates="recommendations")
+
+
+# ---------------------------------------------------------------------------
+# 3.13 oncall_incidents (Alertmanager history tab; advisory read-only).
+# Zero persistent email storage: NO email column exists here — webhook
+# payloads are redacted of emails/JWTs/secrets before persistence, and
+# remediation is stored as recommended_actions text only (never executed).
+# ---------------------------------------------------------------------------
+class OnCallIncident(Base):
+    __tablename__ = "oncall_incidents"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    alert_name: Mapped[str] = mapped_column(String(255))
+    severity: Mapped[str] = mapped_column(String(64), default="unknown")
+    service: Mapped[str] = mapped_column(String(255), default="unknown")
+    status: Mapped[OnCallIncidentStatus] = mapped_column(
+        SqlEnum(OnCallIncidentStatus, native_enum=False, length=32, values_callable=_enum_values),
+        default=OnCallIncidentStatus.FIRING,
+    )
+    fingerprint: Mapped[str] = mapped_column(String(255), index=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Redacted Alertmanager alert snapshot (never emails/JWTs/keys).
+    alert_payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Full structured diagnosis (OnCallDiagnosisResponse JSON).
+    diagnosis_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    read_only_verified: Mapped[bool] = mapped_column(Boolean, default=True)
+    acknowledge_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

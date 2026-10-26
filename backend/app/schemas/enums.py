@@ -97,3 +97,11 @@ class RiskLevel(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
 
+
+class OnCallIncidentStatus(StrEnum):
+    """History-tab incident lifecycle (DATABASE_SCHEMA §3.13)."""
+
+    FIRING = "firing"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
+

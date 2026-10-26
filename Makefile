@@ -14,8 +14,15 @@ PROD_FILE ?= docker-compose.prod.yml
 # :? guards must fail fast at real deploy time (never used to run anything).
 PROD_CONFIG_ENV ?= POSTGRES_PASSWORD=dummy-validation-only DATABASE_URL=postgresql+psycopg://dummy:dummy@db:5432/dummy SECRET_KEY=dummy-validation-only GF_SECURITY_ADMIN_PASSWORD=dummy-validation-only
 
-.PHONY: up down build logs ps config config-prod test-backend clean
+.PHONY: up down build logs ps config config-prod test test-backend clean
 .PHONY: up-prod down-prod logs-prod ps-prod check-prod-env check-mail
+
+test: ## Run automated test suite (backend pytest + frontend typecheck)
+	@echo "== 1/2 Running backend tests (pytest) =="
+	@python3 -m pytest backend/tests -q || pytest backend/tests -q
+	@echo "== 2/2 Running frontend typecheck (tsc) =="
+	@npm --prefix frontend run typecheck
+	@echo "== All test checks passed! =="
 
 up: ## Start local stack (single command): db + backend + worker + frontend + observability
 	$(COMPOSE) -f $(DEV_FILE) up --build -d

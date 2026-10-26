@@ -8,6 +8,7 @@ from app.models.models import (  # noqa: F401
     DevelopmentMilestone,
     DiarySnapshot,
     EvidenceItem,
+    OnCallIncident,
     Project,
     Recommendation,
     Rubric,

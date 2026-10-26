@@ -9,6 +9,18 @@ global:
 rule_files:
   - /etc/prometheus/alert_rules.yml
 
+# Alert delivery: fired user-impact alerts go to Alertmanager (compose
+# service `alertmanager:9093` on the shared `app` network), which POSTs them
+# to Track 1's POST /api/v1/oncall/webhook so alert history is recorded with
+# no manual trigger. Keep the `backend:8000` scrape below — its up==0 drives
+# TargetDeploymentDown.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+      timeout: 10s
+      api_version: v2
+
 scrape_configs:
   # Self-scrape: Prometheus's own /metrics (always available, no app hook needed).
   - job_name: "prometheus"

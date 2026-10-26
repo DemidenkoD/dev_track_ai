@@ -5,10 +5,10 @@ export function OnCallPage(): JSX.Element {
     <main className="page">
       <header className="page-header">
         <div>
-          <h1>On-Call Diagnostics</h1>
+          <h1>Alert History</h1>
           <p className="muted">
-            Bounded, read-only incident diagnosis over Prometheus metrics, Loki logs, and Tempo
-            traces.
+            Past system alerts with plain-language explanations and suggested next steps.
+            Read-only — a human always approves what happens next.
           </p>
         </div>
       </header>

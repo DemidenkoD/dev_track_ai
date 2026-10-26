@@ -53,7 +53,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'diary', label: 'Diary' },
   { id: 'security', label: 'Security' },
   { id: 'deployments', label: 'Deployment' },
-  { id: 'oncall', label: 'On-Call' },
+  { id: 'oncall', label: 'Alert History' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -382,9 +382,7 @@ export function ProjectDetailPage(): JSX.Element {
           checking={checkingDeploy}
         />
       )}
-      {tab === 'oncall' && (
-        <OnCallPanel defaultContextNotes={`Project ${project.name} (${project.id})`} />
-      )}
+      {tab === 'oncall' && <OnCallPanel />}
       {tab === 'settings' && (
         <ProjectSettingsPanel project={project} onUpdated={(updated) => setProject(updated)} />
       )}

@@ -209,7 +209,7 @@ Triggers an immediate SSRF-protected HTTPX health check against the project's de
 
 ---
 
-## 8. Bounded Read-Only On-Call Agent (Phase 4)
+## 8. Bounded Read-Only On-Call Agent (Phase 4) + History Tab (Phase 4b)
 
 ### `POST /api/v1/oncall/diagnose`
 Invokes the bounded, read-only **On-Call Agent** to inspect Prometheus metrics, Loki logs, Tempo traces, and recent failure alerts, returning a structured root-cause diagnosis and safe remediation runbook.
@@ -236,4 +236,40 @@ Invokes the bounded, read-only **On-Call Agent** to inspect Prometheus metrics, 
     "read_only_verified": true
   }
   ```
+  Kept for backwards compatibility; the History tab below replaces manual `alert_name` typing.
+
+### `POST /api/v1/oncall/webhook`
+Alertmanager native webhook receiver — persists alerts as history rows with a remediation plan. **No user JWT**; authenticates via shared secret `Authorization: Bearer <ALERTMANAGER_WEBHOOK_SECRET>` or `X-Alertmanager-Secret` header (`401` otherwise).
+- **Request Body (`AlertmanagerWebhookPayload`)**:
+  ```json
+  {
+    "receiver": "devtrack-oncall",
+    "status": "firing",
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {"alertname": "HighHttp5xxErrorRate", "severity": "critical", "service": "api"},
+        "annotations": {"summary": "5xx spike", "description": "...", "runbook": "..."},
+        "startsAt": "2026-10-26T10:00:00.000Z",
+        "endsAt": null,
+        "fingerprint": "abc123"
+      }
+    ]
+  }
+  ```
+- **Behavior**: dedupes on `(fingerprint, startsAt)` (existing row is updated, not duplicated); creates rows with `status=firing|resolved`; invokes the on-call agent synchronously via protocol to fill `diagnosis_json`; redacts emails/JWTs/secrets from `alert_payload_json` before persistence.
+- **Response `202 Accepted` (`OnCallWebhookResponse`)**: `{ "incidents": [OnCallIncidentSchema, ...] }`
+
+### `GET /api/v1/oncall/incidents`
+Lists persisted incidents for the History tab (auth required). Supports `?status=firing|acknowledged|resolved` and `?limit=` (1–200, default 50), newest first.
+- **Response `200 OK`**: `list[OnCallIncidentSchema]`
+
+### `GET /api/v1/oncall/incidents/{incident_id}`
+Returns a single incident with its redacted payload and full diagnosis/remediation plan (auth required).
+- **Response `200 OK`**: `OnCallIncidentDetailSchema` (`OnCallIncidentSchema` + `alert_payload_json` + `diagnosis: OnCallDiagnosisResponse`)
+
+### `POST /api/v1/oncall/incidents/{incident_id}/acknowledge`
+Marks an incident `acknowledged` with an optional human note (auth required).
+- **Request Body (`AcknowledgeRequest`)**: `{ "note": "Investigating 5xx spike" }`
+- **Response `200 OK`**: `OnCallIncidentDetailSchema`
 

@@ -404,6 +404,8 @@ def normalize_legacy_enum_case(db: Session) -> int:
         " WHERE priority<>LOWER(priority)",
         "UPDATE recommendations SET technical_risk=LOWER(technical_risk)"
         " WHERE technical_risk<>LOWER(technical_risk)",
+        "UPDATE oncall_incidents SET status=LOWER(status)"
+        " WHERE status<>LOWER(status)",
     ]
     total = 0
     for sql in statements:

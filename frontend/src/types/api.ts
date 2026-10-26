@@ -378,6 +378,43 @@ export interface OnCallDiagnosisResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4b: On-Call History Tab (LOCKED contract — mirrors
+// backend/app/schemas/api_contracts.py OnCallIncidentSchema /
+// OnCallIncidentDetailSchema and docs/specs/API_CONTRACT.md §8).
+// ---------------------------------------------------------------------------
+
+/** Lifecycle of a persisted Alertmanager incident row. */
+export type OnCallIncidentStatus = 'firing' | 'acknowledged' | 'resolved';
+
+/** List item for `GET /api/v1/oncall/incidents` (newest first). */
+export interface OnCallIncident {
+  id: string;
+  alert_name: string;
+  severity: string;
+  service: string;
+  status: OnCallIncidentStatus;
+  fingerprint: string;
+  starts_at: string;
+  ends_at?: string | null;
+  confidence: number;
+  read_only_verified: boolean;
+  acknowledge_note?: string | null;
+  project_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Detail view for `GET /api/v1/oncall/incidents/{id}` and
+ * `POST /api/v1/oncall/incidents/{id}/acknowledge`.
+ * `alert_payload_json` is the redacted Alertmanager snapshot (never emails/JWTs/secrets).
+ */
+export interface OnCallIncidentDetail extends OnCallIncident {
+  alert_payload_json: Record<string, unknown>;
+  diagnosis: OnCallDiagnosisResponse;
+}
+
+// ---------------------------------------------------------------------------
 // Request payloads (mirror backend/app/schemas/api_contracts.py request models)
 // ---------------------------------------------------------------------------
 
@@ -453,6 +490,10 @@ export interface OnCallDiagnoseRequest {
   alert_name: string;
   time_window_minutes?: number;
   context_notes?: string | null;
+}
+
+export interface AcknowledgeRequest {
+  note?: string | null;
 }
 
 export interface DeploymentCheckTriggerRequest {

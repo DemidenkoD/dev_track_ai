@@ -5,6 +5,8 @@ import type {
   ProjectMilestonesResponse,
   Recommendation,
   OnCallDiagnosisResponse,
+  OnCallIncident,
+  OnCallIncidentDetail,
   SecurityReport,
   DeploymentCheck,
   RubricSummary,
@@ -597,6 +599,53 @@ export const DEMO_ONCALL: OnCallDiagnosisResponse = {
     'Verify Loki log labels correlate trace_id to Tempo spans.',
   ],
   read_only_verified: true,
+};
+
+export const DEMO_INCIDENTS: OnCallIncident[] = [
+  {
+    id: '11111111-1111-1111-1111-111111111111',
+    alert_name: 'HighHttp5xxErrorRate',
+    severity: 'critical',
+    service: 'api',
+    status: 'acknowledged',
+    fingerprint: 'abc123',
+    starts_at: '2026-10-26T10:00:00.000Z',
+    ends_at: null,
+    confidence: 0.92,
+    read_only_verified: true,
+    acknowledge_note: 'Investigating 5xx spike',
+    project_id: DEMO_PROJECT_ID,
+    created_at: '2026-10-26T10:00:00.000Z',
+    updated_at: '2026-10-26T10:05:00.000Z',
+  },
+  {
+    id: '22222222-2222-2222-2222-222222222222',
+    alert_name: 'HighAnalysisJobFailureRate',
+    severity: 'warning',
+    service: 'worker',
+    status: 'resolved',
+    fingerprint: 'def456',
+    starts_at: '2026-10-25T17:45:00.000Z',
+    ends_at: '2026-10-25T17:48:00.000Z',
+    confidence: 0.88,
+    read_only_verified: true,
+    acknowledge_note: null,
+    project_id: DEMO_PROJECT_ID,
+    created_at: '2026-10-25T17:45:00.000Z',
+    updated_at: '2026-10-25T17:48:00.000Z',
+  },
+];
+
+export const DEMO_INCIDENT_DETAIL: OnCallIncidentDetail = {
+  ...DEMO_INCIDENTS[0],
+  alert_payload_json: {
+    receiver: 'devtrack-oncall',
+    status: 'firing',
+    alert_name: 'HighHttp5xxErrorRate',
+    severity: 'critical',
+    service: 'api',
+  },
+  diagnosis: DEMO_ONCALL,
 };
 
 export const DEMO_RUBRICS: RubricSummary[] = [
