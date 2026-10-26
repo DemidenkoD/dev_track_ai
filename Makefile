@@ -15,7 +15,7 @@ PROD_FILE ?= docker-compose.prod.yml
 PROD_CONFIG_ENV ?= POSTGRES_PASSWORD=dummy-validation-only DATABASE_URL=postgresql+psycopg://dummy:dummy@db:5432/dummy SECRET_KEY=dummy-validation-only GF_SECURITY_ADMIN_PASSWORD=dummy-validation-only
 
 .PHONY: up down build logs ps config config-prod test-backend clean
-.PHONY: up-prod down-prod logs-prod ps-prod check-prod-env
+.PHONY: up-prod down-prod logs-prod ps-prod check-prod-env check-mail
 
 up: ## Start local stack (single command): db + backend + worker + frontend + observability
 	$(COMPOSE) -f $(DEV_FILE) up --build -d
@@ -75,6 +75,22 @@ check-prod-env: ## Preflight VPS/local .env: SECRET_KEY/DATABASE_URL present? GL
 
 test-backend: ## Run backend pytest inside a throwaway container (Track 5 owns test content; tests/ bind-mounted because the image excludes them)
 	$(COMPOSE) -f $(DEV_FILE) run --rm -v ./backend/tests:/code/tests:ro backend python -m pytest -q
+
+check-mail: ## Preflight local mail wiring: MAIL_* present? placeholder vs configured (boolean/length only, secrets never printed)
+	@echo "== check-mail (secrets/addresses never printed) =="; \
+	CFG="$$($(COMPOSE) -f $(DEV_FILE) config 2>/dev/null)"; \
+	if [ -z "$$CFG" ]; then echo "ERROR: 'docker compose config' failed — is docker installed?"; exit 1; fi; \
+	echo "$$CFG" | grep MAIL_ | sed -E 's/(MAIL_SMTP_PASS[:=]).*/\1 <redacted>/; s/(MAIL_SMTP_USER[:=]).*/\1 <redacted>/; s/(MAIL_FROM[:=]).*/\1 <redacted>/; s/=.*PASS.*/=<redacted>/' | sort -u; \
+	COUNT=$$(echo "$$CFG" | grep -c MAIL_); \
+	echo "MAIL_ lines in compose config (expect 14 = 7 x 2 services): $$COUNT"; \
+	if [ "$$COUNT" -ne 14 ]; then echo "WARNING: expected 14 MAIL_ lines; check backend/worker environment blocks."; fi; \
+	HOST_VAL=$$(echo "$$CFG" | grep 'MAIL_SMTP_HOST' | head -1 | sed -E 's/.*:[[:space:]]*//; s/^["'\'']//; s/["'\'']$$//'); \
+	if [ "$$HOST_VAL" = "smtp.example.com" ]; then echo "MAIL_SMTP_HOST: placeholder (smtp.example.com) — mail send will be skipped/degraded."; else echo "MAIL_SMTP_HOST: configured (non-placeholder host detected; secrets still redacted)."; fi; \
+	USER_LEN=$$(echo "$$CFG" | grep 'MAIL_SMTP_USER' | head -1 | sed -E 's/.*:[[:space:]]*//; s/^["'\'']//; s/["'\'']$$//' | tr -d '\n' | wc -c); \
+	PASS_LEN=$$(echo "$$CFG" | grep 'MAIL_SMTP_PASS' | head -1 | sed -E 's/.*:[[:space:]]*//; s/^["'\'']//; s/["'\'']$$//' | tr -d '\n' | wc -c); \
+	echo "MAIL_SMTP_USER length (chars, value not shown): $$USER_LEN (non-empty means configured)."; \
+	echo "MAIL_SMTP_PASS length (chars, value not shown): $$PASS_LEN (non-empty means configured)."; \
+	if [ "$$USER_LEN" -le 1 ] || [ "$$PASS_LEN" -le 1 ]; then echo "MAIL auth: NOT configured (USER/PASS empty) — notifications will be skipped."; else echo "MAIL auth: configured (lengths only, values redacted)."; fi
 
 clean: ## Stop stack AND delete named volumes (destructive: drops local DB + telemetry data)
 	$(COMPOSE) -f $(DEV_FILE) down -v

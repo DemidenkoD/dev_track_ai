@@ -76,6 +76,16 @@ services:
       ZAI_API_KEY: ${ZAI_API_KEY:-}
       GLM_MODEL: ${GLM_MODEL:-glm-5.3-flash}
       GLM_BASE_URL: ${GLM_BASE_URL:-https://api.z.ai/api/paas/v4/}
+      # Mail wiring (Track 6): compose `environment:` injection only.
+      # One-time notify address is volatile-only (in-memory, never persisted
+      # to Postgres/logs/traces). Empty/placeholder => mail send skipped.
+      MAIL_SMTP_HOST: ${MAIL_SMTP_HOST:-smtp.example.com}
+      MAIL_SMTP_PORT: ${MAIL_SMTP_PORT:-465}
+      MAIL_SMTP_SECURE: ${MAIL_SMTP_SECURE:-true}
+      MAIL_SMTP_USER: ${MAIL_SMTP_USER:-}
+      MAIL_SMTP_PASS: ${MAIL_SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-DevTrack AI <noreply@example.com>}
+      MAIL_BASE_URL: ${MAIL_BASE_URL:-http://localhost:8000}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-devtrack-ai-backend}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
@@ -152,6 +162,16 @@ services:
       ZAI_API_KEY: ${ZAI_API_KEY:-}
       GLM_MODEL: ${GLM_MODEL:-glm-5.3-flash}
       GLM_BASE_URL: ${GLM_BASE_URL:-https://api.z.ai/api/paas/v4/}
+      # Mail wiring (Track 6): compose `environment:` injection only.
+      # One-time notify address is volatile-only (in-memory, never persisted
+      # to Postgres/logs/traces). Empty/placeholder => mail send skipped.
+      MAIL_SMTP_HOST: ${MAIL_SMTP_HOST:-smtp.example.com}
+      MAIL_SMTP_PORT: ${MAIL_SMTP_PORT:-465}
+      MAIL_SMTP_SECURE: ${MAIL_SMTP_SECURE:-true}
+      MAIL_SMTP_USER: ${MAIL_SMTP_USER:-}
+      MAIL_SMTP_PASS: ${MAIL_SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-DevTrack AI <noreply@example.com>}
+      MAIL_BASE_URL: ${MAIL_BASE_URL:-http://localhost:8000}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-devtrack-ai-worker}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}

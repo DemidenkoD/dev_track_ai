@@ -697,19 +697,38 @@ def process_single_run(
             )
     except Exception:
         pass
-    # Ephemeral notification: purged on success AND failure; never logged.
-    # Missing entry (no address queued via queue_notification) is a safe no-op.
+    # Ephemeral notification: attempted on success AND failure (intentional —
+    # the user asked for completion status either way), purged first either way,
+    # never logged/persisted/traced (Zero Persistent Email invariant: no DB
+    # column, no address in logs/spans). Missing entry (no address queued via
+    # queue_notification) is a safe no-op. NOTE: the registry is process-local
+    # RAM, so when the API (uvicorn, prod --workers 2) and this worker
+    # (python -m app.worker.runner, separate container) are different
+    # processes, pop_once finds nothing by design and the email is lost. That
+    # gap must NOT be bridged here via Postgres/Redis — handoff to Track 1/6.
     try:
         body = (
             f"Your DevTrack AI analysis finished with status "
             f"{'completed' if ok else 'failed'}."
         )
         notified = send_and_purge(run_id, notify_subject, body, registry=EPHEMERAL_NOTIFICATIONS)
-        if notified:
-            logger.info("Ephemeral notification dispatched for run %s.", run_id)
-        else:
-            # No-op: nothing was queued — log only the run id, never an address.
-            logger.info("No ephemeral notification queued for run %s.", run_id)
+        # notified: bool only — never persist/log the address itself.
+        logger.info(
+            "Ephemeral notification outcome run_id=%s status=%s notified=%s.",
+            run_id,
+            "completed" if ok else "failed",
+            notified,
+        )
+        if not notified:
+            # Covers both "user asked for no email" and the expected
+            # cross-process miss; send_and_purge already warned with the
+            # separate-process hint, so keep this line at info level.
+            logger.info(
+                "No ephemeral notification dispatched for run %s "
+                "(nothing queued or send failed; notified=%s).",
+                run_id,
+                notified,
+            )
     except Exception as exc:
         # Never log the address; run id only.
         logger.warning(

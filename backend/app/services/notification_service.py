@@ -7,11 +7,24 @@ Zero-persistent-email invariant (backend/AGENTS.md §2.2):
     - The address is ``pop()``-ed (purged) immediately upon success OR failure.
     - The address is never written to logs, OpenTelemetry spans, or the DB.
 
+Option A same-process delivery contract (overseer lock):
+    - The API process queues ``notify_email_once`` into
+      :data:`EPHEMERAL_NOTIFICATIONS` via :func:`queue_notification`.
+    - The worker (separate container/process) never sees that RAM, so the API
+      process polls ``analysis_runs`` for completion and then calls
+      :func:`build_completion_subject_and_body` + :func:`send_and_purge` in
+      the SAME process memory.
+    - Track 1 imports exactly ``build_completion_subject_and_body`` and
+      ``send_and_purge`` for this; the worker fallback stays a harmless
+      pop-once no-op (double-send impossible because ``pop_once`` purges).
+
 Public API:
-    - :class:`EphemeralNotificationRegistry` (``set`` / ``pop_once``)
+    - :class:`EphemeralNotificationRegistry` (``set`` / ``pop_once`` / ``clear``)
     - :data:`EPHEMERAL_NOTIFICATIONS` (process-wide singleton)
     - :func:`queue_notification`
-    - :func:`send_and_purge`
+    - :func:`build_completion_subject_and_body` (pure Option A builder)
+    - :func:`send_and_purge` (bool wrapper, contract-invariant compatible)
+    - :class:`NotifyOutcome` + :func:`send_and_purge_detailed` (richer status)
 """
 
 from __future__ import annotations
@@ -84,6 +97,17 @@ class EphemeralNotificationRegistry:
         with self._lock:
             return key in self._store
 
+    def clear(self) -> None:
+        """Remove all staged addresses (test isolation only).
+
+        The QA track calls ``EPHEMERAL_NOTIFICATIONS.clear()`` in fixtures;
+        without this method that call raised ``AttributeError`` (silently
+        swallowed by ``except Exception`` in test setup), leaving state to
+        leak between tests. Clears volatile RAM only — never touches DB/logs.
+        """
+        with self._lock:
+            self._store.clear()
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._store)
@@ -124,6 +148,31 @@ def queue_notification(
     return True
 
 
+def build_completion_subject_and_body(
+    status: str, project_name: str = "DevTrack AI"
+) -> tuple[str, str]:
+    """Build the one-time completion subject/body (Option A, pure helper).
+
+    Same-process contract: Track 1 polls ``analysis_runs`` for completion in
+    the API process, then calls this builder + :func:`send_and_purge` with the
+    SAME in-memory :data:`EPHEMERAL_NOTIFICATIONS` registry. The worker
+    fallback is a harmless pop-once no-op, so double-send is impossible.
+
+    Pure by design: no DB, no I/O, no logging, and deliberately NO email
+    address parameter (the address stays only in the volatile registry and is
+    never interpolated from logs/traces). Sync and fully typed.
+    """
+    normalized = (status or "").strip().lower() or "completed"
+    project = (project_name or "").strip() or "DevTrack AI"
+    subject = f"{project} analysis {normalized}"
+    body = (
+        f"Your {project} analysis run finished with status: {normalized}.\n"
+        "View your scorecard and recommendations in the DevTrack AI UI.\n"
+        "AI estimates are advisory and never official course grades."
+    )
+    return subject, body
+
+
 def _smtp_settings() -> dict[str, object]:
     try:
         from app.core.config import get_settings  # type: ignore
@@ -159,9 +208,19 @@ def send_and_purge(
 
     The address is popped BEFORE sending so it is purged on success AND on
     failure (including :class:`smtplib.SMTPException`). The address value
-    never appears in logs, exceptions, or traces — only the boolean outcome
-    and the run id are recorded.
-    Missing entry (nothing queued) is a safe no-op returning False.
+    never appears in logs, exceptions, or traces — only the boolean outcome,
+    the run id, the exception class name, and the (non-secret) SMTP host are
+    recorded. See :func:`send_and_purge_detailed` for the richer status form;
+    this wrapper preserves the historical ``True``/``False`` singleton
+    contract relied on by contract-invariant tests.
+
+    Missing entry (nothing queued) is a safe no-op returning False. Note that
+    the registry is process-local RAM: when the API (``uvicorn``, possibly
+    ``--workers 2``) and the worker (``python -m app.worker.runner``) run in
+    separate processes/containers, the worker's registry is empty by design
+    and this no-op is expected. Email addresses must NEVER be stored in
+    Postgres/Redis/logs/traces to bridge that gap (Zero Persistent Email
+    invariant) — the cross-process handoff belongs to Track 1/6.
 
     Args:
         analysis_run_id: Queue record whose staged address to consume (str|UUID).
@@ -174,12 +233,69 @@ def send_and_purge(
     Note: uses ``is not None`` (never ``or``) because an empty registry is
     falsy via ``__len__`` and must still be honored when passed explicitly.
     """
+    return send_and_purge_detailed(
+        analysis_run_id, subject, body_text, registry=registry
+    ).sent
+
+
+class NotifyOutcome:
+    """Richer notify status for the worker (volatile-only, no address stored).
+
+    Attributes:
+        sent: True only when SMTP accepted the message.
+        queued: False when ``pop_once`` found nothing staged (safe no-op,
+            typically because the API queued in a different process).
+        smtp_host: Non-secret SMTP host used (for diagnostics only).
+        error_type: Exception class name on failure, else None.
+    """
+
+    __slots__ = ("sent", "queued", "smtp_host", "error_type")
+
+    def __init__(
+        self, *, sent: bool, queued: bool, smtp_host: str, error_type: str | None
+    ) -> None:
+        self.sent = sent
+        self.queued = queued
+        self.smtp_host = smtp_host
+        self.error_type = error_type
+
+    def __bool__(self) -> bool:  # pragma: no cover - convenience only
+        return self.sent
+
+
+def send_and_purge_detailed(
+    analysis_run_id: UUID | str,
+    subject: str,
+    body_text: str,
+    *,
+    registry: EphemeralNotificationRegistry | None = None,
+) -> NotifyOutcome:
+    """Purge-first send returning a :class:`NotifyOutcome`.
+
+    Identical purge-first + volatile-only semantics to :func:`send_and_purge`
+    (address is ``pop()``-ed before SMTP and never logged/persisted/traced),
+    but the caller also learns whether an address was queued, which SMTP host
+    was used, and the failure class on error — so the worker can record a
+    ``notified`` counter/log without ever persisting the address.
+    """
     reg = registry if registry is not None else EPHEMERAL_NOTIFICATIONS
     recipient = reg.pop_once(analysis_run_id)  # purge-first: single use
-    if not recipient:
-        logger.info("No ephemeral notification queued for run %s.", analysis_run_id)
-        return False
     cfg = _smtp_settings()
+    smtp_host = str(cfg.get("host", "unknown"))
+    if not recipient:
+        # Expected whenever the API queued in a different process/container
+        # (backend: uvicorn vs worker: python -m app.worker.runner, or prod
+        # --workers 2): the worker's process-local registry is empty by
+        # design. Deliberately NOT bridged via Postgres/Redis/logs/traces
+        # (Zero Persistent Email invariant) — handoff belongs to Track 1/6.
+        logger.warning(
+            "No ephemeral notification queued for run %s - likely API/worker "
+            "are separate processes (process-local registry); skipping.",
+            analysis_run_id,
+        )
+        return NotifyOutcome(
+            sent=False, queued=False, smtp_host=smtp_host, error_type=None
+        )
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = str(cfg["from"])
@@ -203,12 +319,19 @@ def send_and_purge(
                     smtp.login(str(cfg["user"]), str(cfg["password"]))
                 smtp.send_message(message)
         logger.info("Ephemeral notification sent for run %s.", analysis_run_id)
-        return True
+        return NotifyOutcome(
+            sent=True, queued=True, smtp_host=smtp_host, error_type=None
+        )
     except Exception as exc:
-        # Log only the failure class + run id — never the recipient address.
+        # Structured warning: run id + exception type + non-secret host only.
+        # Never the recipient address, user, or password.
+        error_type = type(exc).__name__
         logger.warning(
-            "Ephemeral notification failed (%s) for run %s.",
-            type(exc).__name__,
+            "Ephemeral notification failed error=%s host=%s for run %s.",
+            error_type,
+            smtp_host,
             analysis_run_id,
         )
-        return False
+        return NotifyOutcome(
+            sent=False, queued=True, smtp_host=smtp_host, error_type=error_type
+        )

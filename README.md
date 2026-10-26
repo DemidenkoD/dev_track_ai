@@ -27,6 +27,34 @@ DevTrack AI is deployed live on a public cloud VPS with full HTTPS, edge TLS ter
 
 ---
 
+## Video Walkthrough & Interactive Demo
+
+> **Full Walkthrough (~2m 45s):** End-to-end guided product tour generated via Playwright Chromium automation and ElevenLabs voiceover narration.
+
+- **Direct Video File:** [demo/devtrack_ai_demo.webm](demo/devtrack_ai_demo.webm)
+- **Interactive Teleprompter & Audio Studio:** [demo/index.html](demo/index.html)
+- **Subtitles (WebVTT):** [demo/audio/demo_subtitles.vtt](demo/audio/demo_subtitles.vtt)
+
+<video src="demo/devtrack_ai_demo.webm" controls="controls" width="100%" style="max-width: 800px;">
+  Your browser does not support the video tag. You can view or download the walkthrough directly: <a href="demo/devtrack_ai_demo.webm">demo/devtrack_ai_demo.webm</a>.
+</video>
+
+### Walkthrough Scenes Overview
+
+| Scene | Duration | Topic | Key Rubric Capability Demonstrated |
+| :--- | :---: | :--- | :--- |
+| **1. Intro & Problem** | ~25s | Course dropout dilemma & blindspots | Problem description & course-first motivation |
+| **2. Login & Dashboard** | ~19s | Pre-seeded reviewer login & assignments | Two-dimensional tracking: Development Progress vs Expected Score |
+| **3. Rubric Scorecard** | ~28s | 12-criterion Zoomcamp scorecard | Score states (`estimated` / `verified` / `needs_review`) & human override protection |
+| **4. Analysis Pipeline** | ~22s | Read-only repo inspection & security scans | Sandboxed Semgrep, Gitleaks, Bandit, SSRF-safe probers |
+| **5. AI Mentor Chat** | ~24s | Evidence-backed remediation recommendations | Rubric-gap targeting & split milestone management |
+| **6. Phase 4 Observability** | ~19s | Prometheus, Grafana, Loki, Tempo & On-Call | Trace correlation (`trace_id`) & bounded read-only `OnCallAgent` |
+| **7. Architecture & Closing** | ~18s | 6-track parallel team structure & `make up` | Single-command startup & complete project verification |
+
+*To re-record or customize the walkthrough locally, run [`bash scripts/record_demo.sh`](scripts/record_demo.sh).*
+
+---
+
 ## Problem & Solution Summary
 
 ### The Problem

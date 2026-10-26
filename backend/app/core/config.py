@@ -157,6 +157,43 @@ class Settings(BaseSettings):
     MAIL_FROM: str = "DevTrack AI <user@example.com>"
     MAIL_BASE_URL: str = "http://localhost:8000"
 
+    @property
+    def smtp_configured(self) -> bool:
+        """Boolean-only SMTP readiness signal (never exposes secrets).
+
+        False when the host is still the ``smtp.example.com`` placeholder
+        (or empty) or when auth credentials are missing. Callers must treat
+        a staged ephemeral notification as "queued in this process memory,
+        not delivered" whenever this is False — the worker send will fail.
+        """
+        host = (self.MAIL_SMTP_HOST or "").strip().lower()
+        if host in ("", "smtp.example.com"):
+            return False
+        if not (self.MAIL_SMTP_USER or "").strip():
+            return False
+        if not (self.MAIL_SMTP_PASS or "").strip():
+            return False
+        return True
+
+    @property
+    def smtp_config_warning(self) -> str | None:
+        """Human-readable reason SMTP is unusable, or None when configured.
+
+        Contains no secret values — only which category is missing so the
+        API layer can log a safe warning at trigger time.
+        """
+        host = (self.MAIL_SMTP_HOST or "").strip()
+        if host.lower() in ("", "smtp.example.com"):
+            return (
+                "MAIL_SMTP_HOST is still the placeholder "
+                "(smtp.example.com); delivery will fail."
+            )
+        if not (self.MAIL_SMTP_USER or "").strip():
+            return "MAIL_SMTP_USER is empty; SMTP auth will fail."
+        if not (self.MAIL_SMTP_PASS or "").strip():
+            return "MAIL_SMTP_PASS is empty; SMTP auth will fail."
+        return None
+
     # --- Worker & resource limits ---
     WORKER_POLL_INTERVAL_SECONDS: int = 5
     ANALYSIS_TIMEOUT_SECONDS: int = 300
