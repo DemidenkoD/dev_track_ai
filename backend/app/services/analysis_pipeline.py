@@ -1142,6 +1142,59 @@ def _persist_security_report(
             )
         session.add_all(findings)
         session.flush()
+        # Security-scanner bridge (Track 3 → Track 1 stable creator):
+        # link critical/high findings into oncall_incidents History.
+        # Advisory text only — never touches criterion_assessments,
+        # never executes remediation, never persists emails.
+        try:
+            from app.api.v1.endpoints.oncall import (  # type: ignore  # Track-1-owned
+                create_security_incident,
+            )
+        except Exception as import_exc:
+            logger.warning(
+                "Security-incident bridge skipped (%s).", type(import_exc).__name__
+            )
+            return
+        commit_sha = str(result.commit_sha or "unknown")
+        for finding in result.security.findings or []:
+            sev = str(getattr(finding, "severity", "") or "").strip().lower()
+            if sev not in ("critical", "high"):
+                continue
+            rule_id = str(getattr(finding, "rule_id", "") or "unknown")[:255]
+            file_path = getattr(finding, "file_path", None)
+            key = (
+                str(getattr(finding, "scanner", "") or ""),
+                str(getattr(finding, "rule_id", "") or ""),
+                file_path,
+            )
+            fallback_key = (
+                str(getattr(finding, "scanner", "") or ""),
+                str(getattr(finding, "rule_id", "") or ""),
+            )
+            _exp, _rem, _rank = finding_explanations.get(
+                key,
+                finding_explanations_by_rule.get(fallback_key, (None, None, None)),
+            )
+            summary = (ai_summary or str(getattr(finding, "message", "") or ""))[:2000]
+            hints = [_rem] if _rem and str(_rem).strip() else []
+            try:
+                create_security_incident(
+                    session,
+                    project_id=project_id,
+                    rule_id=rule_id,
+                    severity=sev,
+                    file_path=file_path,
+                    commit_sha=commit_sha,
+                    summary=summary,
+                    remediation_hints=hints,
+                )
+            except Exception as bridge_exc:
+                logger.warning(
+                    "Security-incident bridge failed for %s (%s).",
+                    rule_id,
+                    type(bridge_exc).__name__,
+                )
+                continue
     except Exception as exc:
         logger.warning("Security persist failed (%s).", type(exc).__name__)
 

@@ -167,6 +167,22 @@ DevTrack AI implements full four-pillar observability (**Metrics, Logs, Traces, 
 | **Tempo Trace Receiver** | `http://localhost:3200` *(OTLP gRPC `:4317`)* | Internal Docker network (`tempo:4317`) |
 | **Loki Log Ingestion** | `http://localhost:3100/ready` | Internal Docker network (`loki:3100`) |
 
+### How the On-Call Loop Works
+
+1. **Detect (Prometheus):** 4 SLO rules in `infra/prometheus/alert_rules.yml` — `HighHttp5xxErrorRate`, `HighApiLatencyP95`, `AnalysisWorkerJobFailures` (`increase(analysis_runs_failed_total[15m]) > 3`, incremented in the backend process via `backend/app/core/telemetry.py:record_analysis_run_outcome` so the `backend:8000 /metrics` scrape sees it), `TargetDeploymentDown`. Scraped from `backend:8000 /metrics` (`infra/prometheus/prometheus.yml`).
+2. **Route (Alertmanager):** `infra/alertmanager/alertmanager.yml` groups by `alertname,service,severity` and `POST`s `http://backend:8000/api/v1/oncall/webhook` with `Authorization: Bearer <ALERTMANAGER_WEBHOOK_SECRET>`. Empty default = fail-closed `401` until the operator sets a strong secret (`openssl rand -hex 32`) for both `backend` + `alertmanager` containers. No JWT on this route; everything else under `/oncall/*` requires JWT.
+3. **Persist (Backend):** `backend/app/api/v1/endpoints/oncall.py:webhook` dedupes on `(fingerprint, startsAt)`, redacts emails/JWTs/secrets (`_redact_text/_redact_json`), calls the bounded agent synchronously for a diagnosis, stores `oncall_incidents` (`diagnosis_json`, `confidence`, `read_only_verified=true`), returns `202`. Infra alerts store `project_id=None`; critical/high scanner findings bridge via `create_security_incident()` (`oncall.py:171`, called by `backend/app/services/analysis_pipeline.py:_persist_security_report`) with `alert_name="SecurityCritical:{rule_id}"`, `service="security-scanner"`, real `project_id`, fingerprint `sha256(rule|path|sha)[0:32]`, deduped per project+commit.
+4. **Triage (UI + API):** `GET /api/v1/oncall/incidents?status&limit&project_id` (global when omitted) powers `frontend/src/components/OnCallPanel.tsx` at `/oncall` (global) and Project Detail → `Alert History` tab (scoped by `projectId`). `POST .../{id}/acknowledge` flips `firing → acknowledged` with a human note. Manual `POST /api/v1/oncall/diagnose` (JWT) is kept for compat; History is the primary UX.
+
+### Why the On-Call Agent Can't Fix Things Directly (Read-Only Safety Design)
+
+DevTrack AI is **advisory & read-only** (`AGENTS.md`): it never pushes commits, opens PRs, modifies user repos, executes untrusted repo code, or auto-remediates production. The agent in `backend/app/agents/oncall_agent.py` enforces this structurally, not just by prompt:
+
+- **No tools to mutate:** zero shell (`subprocess`/`exec`), zero DB-write, zero remediation-runner tools. It only `GET`s Prometheus `/api/v1/query`, Loki `/loki/api/query_range`, Tempo `/api/search` (2s timeout) plus `postgres_jobs` snapshots, then returns `OnCallDiagnosisOutput{incident_summary, root_cause_hypothesis, confidence, evidence_citations[{source,query,excerpt}], recommended_actions[], read_only_verified=true}` (`backend/app/schemas/agent_outputs.py`). Every path — including LLM fallback (`confidence=0.25`) — hard-sets `read_only_verified=true`.
+- **Text, not action:** `recommended_actions` are human-runnable checklist strings rendered in the History detail + `remediation-plan` list (copy-text only). Acknowledge only changes incident `status`; nothing restarts, redeploys, migrates, or patches.
+- **Untrusted input is redacted, never executed:** alert payloads, notes, scanner messages and file paths are scrubbed of emails/JWTs/tokens/keys before storage/display; deployment checks re-validate DNS against private/loopback/link-local/cloud-metadata (`deployment_monitor.py`, SSRF block); scanners run in isolated subprocesses with timeouts.
+- **Why this matters:** auto-fix would turn a course mentor into an unreviewed production actor — a wrong `kubectl`, SQL write, or secret leak from a hallucinated step could take down `ct-academia.pl` or taint official rubric scores (`score_state`, `ai_proposed_points` stay human-verified). So the agent diagnoses with cited telemetry and proposes; **the human executes**.
+
 ---
 
 ## Repository & Multi-Agent Architecture

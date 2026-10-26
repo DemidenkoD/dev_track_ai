@@ -675,3 +675,461 @@ class TestOnCallGuardRails:
             assert row.human_override_points is None
         finally:
             db.close()
+
+
+# ---------------------------------------------------------------------------
+# A+B: scanner -> incident bridge + ?project_id scoping (Track 1 creator,
+# Track 3 bridge call, Track 4 banner + scoped UI).
+# ---------------------------------------------------------------------------
+class TestSecurityScannerBridge:
+    """Bridge creates firing SecurityCritical:{rule_id} rows (Track 1 creator)."""
+
+    def _make_project(self, client, name="Bridge Probe"):
+        proj = client.post(
+            "/api/v1/projects",
+            json={
+                "name": name,
+                "github_repo_url": "https://github.com/octocat/hello-world",
+            },
+        ).json()
+        return proj["id"]
+
+    def test_bridge_creates_firing_security_critical_row(
+        self, isolated_client, monkeypatch
+    ):
+        import hashlib
+        import json
+        import re
+
+        from app.api.v1.endpoints.oncall import create_security_incident
+        from app.models import models
+
+        _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid = self._make_project(client)
+
+        db = Session()
+        try:
+            row = create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="semgrep.python.lang.security.use-def",
+                severity="critical",
+                file_path="app/main.py",
+                commit_sha="abc123def456",
+                summary="Critical finding; contact owner@example.com for triage",
+                remediation_hints=["Rotate api_key=TOPSECRET123 and redeploy"],
+            )
+            assert row.alert_name == "SecurityCritical:semgrep.python.lang.security.use-def"
+            assert row.severity == "critical"
+            assert row.service == "security-scanner"
+            assert str(row.status) == "firing"
+            assert row.read_only_verified is True
+            assert str(row.project_id) == pid
+            assert re.fullmatch(r"[0-9a-f]{32}", row.fingerprint), row.fingerprint
+            expected = hashlib.sha256(
+                "semgrep.python.lang.security.use-def|app/main.py|abc123def456".encode()
+            ).hexdigest()[:32]
+            assert row.fingerprint == expected
+            assert row.confidence == 0.75
+            # Diagnosis shaped like OnCallDiagnosisResponse.
+            assert row.diagnosis_json["read_only_verified"] is True
+            assert row.diagnosis_json["confidence"] == 0.75
+            assert row.diagnosis_json["evidence_citations"][0]["source"] == "security-scanner"
+            assert row.diagnosis_json["evidence_citations"][0]["query"] == (
+                "semgrep.python.lang.security.use-def"
+            )
+            assert isinstance(row.diagnosis_json["recommended_actions"], list)
+            dumped = json.dumps(
+                {"payload": row.alert_payload_json, "diag": row.diagnosis_json}
+            )
+            assert "owner@example.com" not in dumped
+            assert "TOPSECRET123" not in dumped
+            assert "@example.com" not in dumped
+            assert "[redacted" in dumped.lower()
+            # No email column anywhere on the bridge row.
+            assert not any(
+                "email" in c.name.lower()
+                for c in models.OnCallIncident.__table__.columns
+            )
+        finally:
+            db.close()
+
+    def test_bridge_severity_high_passthrough(self, isolated_client, monkeypatch):
+        from app.api.v1.endpoints.oncall import create_security_incident
+
+        _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid = self._make_project(client, name="Bridge High Probe")
+        db = Session()
+        try:
+            row = create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="bandit.B105",
+                severity="high",
+                file_path="app/worker.py",
+                commit_sha="sha-high-001",
+                summary="Hardcoded password string",
+                remediation_hints=["Move secret to env var"],
+            )
+            assert row.severity == "high"
+            assert row.service == "security-scanner"
+            assert row.alert_name == "SecurityCritical:bandit.B105"
+        finally:
+            db.close()
+
+    def test_bridge_redacts_jwt_and_bearer(self, isolated_client, monkeypatch):
+        import json
+
+        from app.api.v1.endpoints.oncall import create_security_incident
+
+        _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid = self._make_project(client, name="Bridge Redact Probe")
+        probe_jwt = (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "dGVzdHNpZ25hdHVyZXhhbXBsZQ"
+        )
+        db = Session()
+        try:
+            row = create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="gitleaks.generic-api-key",
+                severity="critical",
+                file_path="app/config.py",
+                commit_sha="sha-redact-001",
+                summary=(
+                    f"leaked {probe_jwt} auth Bearer super-secret-token-abc123 "
+                    "contact leak.victim.track5@example.com"
+                ),
+                remediation_hints=["revoke Bearer super-secret-token-abc123 now"],
+            )
+            dumped = json.dumps(
+                {"payload": row.alert_payload_json, "diag": row.diagnosis_json}
+            )
+            assert probe_jwt not in dumped
+            assert "super-secret-token-abc123" not in dumped
+            assert "leak.victim.track5@example.com" not in dumped
+            assert "[redacted" in dumped.lower()
+        finally:
+            db.close()
+
+    def test_bridge_dedupe_same_rule_path_sha_returns_one_row(
+        self, isolated_client, monkeypatch
+    ):
+        from app.api.v1.endpoints.oncall import create_security_incident
+        from app.models import models
+
+        _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid = self._make_project(client, name="Bridge Dedupe Probe")
+        db = Session()
+        try:
+            first = create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="semgrep.dedupe.rule",
+                severity="critical",
+                file_path="app/dup.py",
+                commit_sha="sha-dedupe-001",
+                summary="first",
+                remediation_hints=["fix it"],
+            )
+            first_id = str(first.id)
+            second = create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="semgrep.dedupe.rule",
+                severity="critical",
+                file_path="app/dup.py",
+                commit_sha="sha-dedupe-001",
+                summary="second (same rule+path+sha)",
+                remediation_hints=["fix it"],
+            )
+            assert str(second.id) == first_id
+            count = (
+                db.query(models.OnCallIncident)
+                .filter(
+                    models.OnCallIncident.fingerprint == first.fingerprint,
+                    models.OnCallIncident.project_id == UUID(pid),
+                )
+                .count()
+            )
+            assert count == 1
+        finally:
+            db.close()
+
+    def test_bridge_different_commit_sha_creates_new_row(
+        self, isolated_client, monkeypatch
+    ):
+        from app.api.v1.endpoints.oncall import create_security_incident
+        from app.models import models
+
+        _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid = self._make_project(client, name="Bridge New SHA Probe")
+        db = Session()
+        try:
+            first = create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="semgrep.newsha.rule",
+                severity="critical",
+                file_path="app/a.py",
+                commit_sha="sha-aaa-001",
+                summary="sha a",
+            )
+            second = create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="semgrep.newsha.rule",
+                severity="critical",
+                file_path="app/a.py",
+                commit_sha="sha-bbb-002",
+                summary="sha b",
+            )
+            assert str(second.id) != str(first.id)
+            assert second.fingerprint != first.fingerprint
+            count = (
+                db.query(models.OnCallIncident)
+                .filter(models.OnCallIncident.project_id == UUID(pid))
+                .count()
+            )
+            assert count == 2
+        finally:
+            db.close()
+
+    def test_webhook_rows_still_project_id_none(
+        self, isolated_client, monkeypatch
+    ):
+        secret = _set_webhook_secret(monkeypatch)
+        client, _ = isolated_client
+        resp = _post_webhook(
+            client, _webhook_payload(fingerprint="fp-track5-bridge-null"), secret
+        )
+        assert resp.status_code == 202
+        assert resp.json()["incidents"][0]["project_id"] is None
+
+    def test_project_id_filter_scoped_global_and_invalid(
+        self, isolated_client, monkeypatch
+    ):
+        from app.api.v1.endpoints.oncall import create_security_incident
+
+        secret = _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid_a = self._make_project(client, name="Bridge Scope A")
+        pid_b = self._make_project(client, name="Bridge Scope B")
+
+        db = Session()
+        try:
+            create_security_incident(
+                db,
+                project_id=UUID(pid_a),
+                rule_id="semgrep.scope.a",
+                severity="critical",
+                file_path="app/a.py",
+                commit_sha="sha-scope-a",
+                summary="scope a",
+            )
+            create_security_incident(
+                db,
+                project_id=UUID(pid_b),
+                rule_id="semgrep.scope.b",
+                severity="high",
+                file_path="app/b.py",
+                commit_sha="sha-scope-b",
+                summary="scope b",
+            )
+        finally:
+            db.close()
+        # Global webhook row (project_id=None) exists alongside scoped rows.
+        _post_webhook(
+            client, _webhook_payload(fingerprint="fp-track5-scope-global"), secret
+        )
+
+        scoped_a = client.get(f"/api/v1/oncall/incidents?project_id={pid_a}")
+        assert scoped_a.status_code == 200, scoped_a.text[:300]
+        rows_a = scoped_a.json()
+        assert len(rows_a) == 1
+        assert rows_a[0]["project_id"] == pid_a
+        assert rows_a[0]["alert_name"] == "SecurityCritical:semgrep.scope.a"
+
+        scoped_b = client.get(f"/api/v1/oncall/incidents?project_id={pid_b}")
+        assert scoped_b.status_code == 200
+        assert len(scoped_b.json()) == 1
+        assert scoped_b.json()[0]["project_id"] == pid_b
+
+        unscoped = client.get("/api/v1/oncall/incidents")
+        assert unscoped.status_code == 200
+        # Omitted ?project_id returns the global view (scoped + unscoped rows).
+        assert len(unscoped.json()) >= 3
+
+        bad = client.get("/api/v1/oncall/incidents?project_id=not-a-uuid")
+        assert bad.status_code == 422, bad.text[:300]
+
+    def test_bridge_never_touches_criterion_assessments(
+        self, isolated_client, monkeypatch
+    ):
+        from app.api.v1.endpoints.oncall import create_security_incident
+        from app.models import models
+        from app.schemas import enums
+
+        _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid = self._make_project(client, name="Bridge Guard Probe")
+        milestones = client.get(f"/api/v1/projects/{pid}/milestones").json()[
+            "assessment_milestones"
+        ]
+        run_id = client.get(f"/api/v1/projects/{pid}/analyses").json()[0]["id"]
+
+        db = Session()
+        try:
+            for am in milestones[:2]:
+                db.add(
+                    models.CriterionAssessment(
+                        analysis_run_id=UUID(run_id),
+                        project_id=UUID(pid),
+                        assessment_milestone_id=UUID(am["id"]),
+                        criterion_code=am.get("criterion_code", "ci_cd"),
+                        max_points=am.get("max_points", 2),
+                        ai_proposed_points=1,
+                        ai_reasoning="bridge guard reasoning",
+                        ai_confidence=0.7,
+                        missing_for_next_level="guard next level",
+                        score_state=enums.ScoreState.ESTIMATED,
+                        evidence_ids=[],
+                    )
+                )
+            db.commit()
+            before = [
+                (
+                    r.ai_proposed_points,
+                    r.ai_reasoning,
+                    str(r.score_state),
+                    r.human_override_points,
+                )
+                for r in db.query(models.CriterionAssessment)
+                .filter(models.CriterionAssessment.project_id == UUID(pid))
+                .order_by(models.CriterionAssessment.criterion_code)
+                .all()
+            ]
+        finally:
+            db.close()
+
+        db = Session()
+        try:
+            create_security_incident(
+                db,
+                project_id=UUID(pid),
+                rule_id="semgrep.guard.rule",
+                severity="critical",
+                file_path="app/guard.py",
+                commit_sha="sha-guard-001",
+                summary="guard finding",
+                remediation_hints=["review manually"],
+            )
+        finally:
+            db.close()
+
+        db = Session()
+        try:
+            after = [
+                (
+                    r.ai_proposed_points,
+                    r.ai_reasoning,
+                    str(r.score_state),
+                    r.human_override_points,
+                )
+                for r in db.query(models.CriterionAssessment)
+                .filter(models.CriterionAssessment.project_id == UUID(pid))
+                .order_by(models.CriterionAssessment.criterion_code)
+                .all()
+            ]
+        finally:
+            db.close()
+        assert after == before
+        assert all(
+            points == 1 and state == enums.ScoreState.ESTIMATED
+            for points, _, state, _ in after
+        )
+
+    def test_bridge_uses_stable_creator_no_direct_model_writes(
+        self, repo_root: Path
+    ):
+        pipeline = (
+            repo_root / "backend" / "app" / "services" / "analysis_pipeline.py"
+        ).read_text(encoding="utf-8")
+        assert "create_security_incident" in pipeline
+        assert "OnCallIncident(" not in pipeline
+        worker_dir = repo_root / "backend" / "app" / "worker"
+        if worker_dir.is_dir():
+            for path in worker_dir.rglob("*.py"):
+                assert "OnCallIncident(" not in path.read_text(encoding="utf-8"), (
+                    f"worker must call the Track-1 creator, not the model: {path}"
+                )
+        services_dir = repo_root / "backend" / "app" / "services"
+        for path in services_dir.glob("*.py"):
+            if path.name == "analysis_pipeline.py":
+                continue
+            assert "OnCallIncident(" not in path.read_text(encoding="utf-8"), (
+                f"only _persist_security_report may bridge: {path.name}"
+            )
+
+    def test_bridge_failure_does_not_fail_run(self, isolated_client, monkeypatch):
+        """Creator exception is swallowed; the security report still persists."""
+        from app.models import models
+        from app.services import analysis_pipeline as pipeline_mod
+        from app.services.security_scanner import NormalizedFinding, ScanSummary
+
+        _set_webhook_secret(monkeypatch)
+        client, Session = isolated_client
+        pid = self._make_project(client, name="Bridge Failure Probe")
+        run_id = client.get(f"/api/v1/projects/{pid}/analyses").json()[0]["id"]
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("bridge creator exploded (test probe)")
+
+        monkeypatch.setattr(
+            "app.api.v1.endpoints.oncall.create_security_incident", _boom
+        )
+        result = pipeline_mod.PipelineResult(
+            commit_sha="sha-bridge-fail-001",
+            previous_commit_sha=None,
+            dev_completion_pct=0.0,
+            summary_markdown="probe",
+            security=ScanSummary(
+                scanners_executed=["semgrep"],
+                scanners_skipped=[],
+                findings=[
+                    NormalizedFinding(
+                        scanner="semgrep",
+                        rule_id="semgrep.fail.rule",
+                        severity="critical",
+                        file_path="app/fail.py",
+                        message="boom",
+                    )
+                ],
+                overall_status="critical",
+            ),
+        )
+        db = Session()
+        try:
+            # Must not raise even though the bridge creator raises.
+            pipeline_mod._persist_security_report(
+                db,
+                analysis_run_id=UUID(run_id),
+                project_id=UUID(pid),
+                result=result,
+            )
+            db.commit()
+            report = (
+                db.query(models.SecurityReport)
+                .filter(models.SecurityReport.analysis_run_id == UUID(run_id))
+                .one_or_none()
+            )
+            assert report is not None, "security report must persist despite bridge failure"
+        finally:
+            db.close()

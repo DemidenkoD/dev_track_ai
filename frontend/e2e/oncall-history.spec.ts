@@ -338,3 +338,234 @@ test.describe('on-call history tab (real UI, mocked API)', () => {
     await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(0);
   });
 });
+
+test.describe('on-call history scoping A+B (banner + ?project_id)', () => {
+  const SCOPED_PROJECT_ID = '33333333-3333-3333-3333-333333333333';
+  const SCOPED_PROJECT_NAME = 'Bridge Scope Project';
+
+  const SCOPED_INCIDENT: OnCallIncident = {
+    id: '33333333-3333-3333-3333-333333333334',
+    alert_name: 'SecurityCritical:semgrep.bridge-rule',
+    severity: 'critical',
+    service: 'security-scanner',
+    status: 'firing',
+    fingerprint: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    starts_at: '2026-10-26T12:00:00.000Z',
+    ends_at: null,
+    confidence: 0.75,
+    read_only_verified: true,
+    acknowledge_note: null,
+    project_id: SCOPED_PROJECT_ID,
+    created_at: '2026-10-26T12:00:05.000Z',
+    updated_at: '2026-10-26T12:00:05.000Z',
+  };
+
+  const SCOPED_DETAIL: OnCallIncidentDetail = {
+    ...SCOPED_INCIDENT,
+    alert_payload_json: {
+      rule_id: 'semgrep.bridge-rule',
+      severity: 'critical',
+      file_path: 'app/main.py',
+      commit_sha: 'abc123def456',
+      summary: 'Critical scanner finding (redacted contact [redacted-email])',
+    },
+    diagnosis: {
+      incident_summary: "Critical security finding 'semgrep.bridge-rule' detected.",
+      root_cause_hypothesis: "Scanner rule 'semgrep.bridge-rule' flagged app/main.py.",
+      confidence: 0.75,
+      evidence_citations: [
+        { source: 'security-scanner', query: 'semgrep.bridge-rule', excerpt: 'app/main.py' },
+      ],
+      recommended_actions: ['Review app/main.py and remediate (human approval required).'],
+      read_only_verified: true,
+    },
+  };
+
+  const SCOPED_PROJECT: Record<string, unknown> = {
+    id: SCOPED_PROJECT_ID,
+    name: SCOPED_PROJECT_NAME,
+    description: 'Scoped history probe',
+    github_repo_url: 'https://github.com/octocat/hello-world',
+    github_owner: 'octocat',
+    github_repo: 'hello-world',
+    course_name: 'AI Dev Tools Zoomcamp 2026',
+    rubric_id: '00000000-0000-0000-0000-000000000009',
+    status: 'active',
+    start_date: null,
+    target_date: null,
+    weekly_hours: 12,
+    diary_path: null,
+    deployment_url: null,
+    daily_schedule_cron: '0 6 * * *',
+    milestones_approved: true,
+    last_analysis_at: null,
+    last_commit_sha: 'abc1234',
+    security_status: 'pass',
+    deployment_reachable: true,
+    expected_score: {
+      advisory_notice: 'AI estimates are advisory and never constitute an official course grade.',
+      estimated_points: 4,
+      verified_points: 2,
+      effective_points: 4,
+      potential_additional_points: 20,
+      max_points: 24,
+      passing_threshold: 10,
+      meets_passing_threshold: false,
+    },
+    development_progress: {
+      completed_tasks: 1,
+      partial_tasks: 0,
+      outstanding_tasks: 3,
+      total_tasks: 4,
+      completion_pct: 25,
+      milestones_approved: true,
+    },
+    latest_summary_markdown: null,
+    stalled_flag: false,
+    scope_creep_flag: false,
+    created_at: '2026-10-26T00:00:00.000Z',
+    updated_at: '2026-10-26T00:00:00.000Z',
+  };
+
+  /** Scoped mocks for /projects/:id?tab=oncall: project stub + ?project_id-aware incidents. */
+  async function mockScopedApi(page: Page, seenIncidentsUrls: string[]): Promise<void> {
+    await page.route('**/api/v1/auth/me', (route) =>
+      jsonFulfill(route, { username: 'reviewer@datatalks.club', role: 'reviewer' }),
+    );
+    await page.route(
+      (url) => url.pathname.includes('/api/v1/'),
+      (route) => {
+        const req = route.request();
+        const url = new URL(req.url());
+        const pathname = url.pathname;
+
+        if (pathname.includes('/api/v1/oncall/incidents')) {
+          if (req.method() === 'POST' && pathname.endsWith('/acknowledge')) {
+            return jsonFulfill(route, { ...SCOPED_DETAIL, status: 'acknowledged' });
+          }
+          const detailMatch = pathname.match(/\/api\/v1\/oncall\/incidents\/([^/]+)$/);
+          if (req.method() === 'GET' && detailMatch) {
+            if (detailMatch[1] === SCOPED_INCIDENT.id) return jsonFulfill(route, SCOPED_DETAIL);
+            return jsonFulfill(route, STUB_DETAIL);
+          }
+          if (req.method() === 'GET' && pathname.endsWith('/oncall/incidents')) {
+            seenIncidentsUrls.push(url.toString());
+            const pid = url.searchParams.get('project_id');
+            if (pid === SCOPED_PROJECT_ID) return jsonFulfill(route, [SCOPED_INCIDENT]);
+            if (pid) return jsonFulfill(route, []);
+            return jsonFulfill(route, STUB_INCIDENTS);
+          }
+          return route.fallback();
+        }
+
+        if (pathname === `/api/v1/projects/${SCOPED_PROJECT_ID}` && req.method() === 'GET') {
+          return jsonFulfill(route, SCOPED_PROJECT);
+        }
+        if (pathname.includes('/api/v1/projects/')) {
+          if (
+            pathname.endsWith('/recommendations') ||
+            pathname.endsWith('/deployments') ||
+            pathname.endsWith('/analyses') ||
+            pathname.endsWith('/evidence')
+          ) {
+            return jsonFulfill(route, []);
+          }
+          return jsonFulfill(route, { detail: 'scoped stub: not found' }, 404);
+        }
+        return route.fallback();
+      },
+    );
+    await page.addInitScript(() => {
+      try {
+        window.localStorage.setItem('devtrack.auth.token', 'e2e-oncall-scope-token');
+      } catch {
+        // storage unavailable — auth mock still covers /auth/me
+      }
+    });
+  }
+
+  async function gotoScopedOnCall(
+    page: Page,
+    baseURL: string | undefined,
+  ): Promise<void> {
+    await page.goto(
+      `${e2eBaseUrl(baseURL)}/projects/${SCOPED_PROJECT_ID}?tab=oncall`,
+      { waitUntil: 'domcontentloaded', timeout: 15000 },
+    );
+    await expect(page.getByTestId('incident-history')).toBeVisible({ timeout: 15000 });
+  }
+
+  test('scoped bridge incident carries SecurityCritical + project_id shape', () => {
+    expect(SCOPED_INCIDENT.alert_name.startsWith('SecurityCritical:')).toBe(true);
+    expect(SCOPED_INCIDENT.project_id).toBe(SCOPED_PROJECT_ID);
+    expect(SCOPED_INCIDENT.service).toBe('security-scanner');
+    expect(SCOPED_INCIDENT.read_only_verified).toBe(true);
+    expect(SCOPED_INCIDENT.fingerprint).toMatch(/^[0-9a-f]{32}$/);
+    expect(SCOPED_DETAIL.diagnosis.confidence).toBe(0.75);
+  });
+
+  test('global history shows scope banner without scoped pill (real UI)', async ({
+    page,
+    baseURL,
+  }) => {
+    await mockOnCallApi(page);
+    await gotoOnCall(page, baseURL);
+    await expect(page.getByTestId('history-scope-note')).toBeVisible();
+    await expect(page.getByTestId('history-scope-note')).toContainText(/operational alerts only/i);
+    await expect(page.locator('[data-testid="history-project-filter"]')).toHaveCount(0);
+  });
+
+  test('scoped project tab shows banner + pill + one scoped row (real UI)', async ({
+    page,
+    baseURL,
+  }) => {
+    const seen: string[] = [];
+    await mockScopedApi(page, seen);
+    await gotoScopedOnCall(page, baseURL);
+    // Banner carries the project name + link to the Security tab.
+    await expect(page.getByTestId('history-scope-note')).toBeVisible();
+    await expect(page.getByTestId('history-scope-note')).toContainText(SCOPED_PROJECT_NAME);
+    await expect(page.getByTestId('history-scope-note')).toContainText(/code findings live/i);
+    const scopeLink = page.getByTestId('history-scope-note').getByRole('link', {
+      name: /view security findings/i,
+    });
+    await expect(scopeLink).toBeVisible();
+    await expect(scopeLink).toHaveAttribute('href', '?tab=security');
+    // Scoped pill + back-link to the global view.
+    await expect(page.getByTestId('history-project-filter')).toBeVisible();
+    await expect(page.getByTestId('history-project-filter')).toContainText(SCOPED_PROJECT_NAME);
+    const allLink = page.getByTestId('history-project-filter').getByRole('link', {
+      name: /view all alerts/i,
+    });
+    await expect(allLink).toBeVisible();
+    await expect(allLink).toHaveAttribute('href', '/oncall');
+    // Scoped fetch returned only the SecurityCritical row.
+    await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(1);
+    await expect(page.getByTestId('incident-list')).toContainText(
+      'SecurityCritical:semgrep.bridge-rule',
+    );
+    await expect(page.getByTestId('incident-list')).not.toContainText('HighHttp5xxErrorRate');
+  });
+
+  test('scoped fetch sends ?project_id (assert via request predicate)', async ({
+    page,
+    baseURL,
+  }) => {
+    const seen: string[] = [];
+    await mockScopedApi(page, seen);
+    await gotoScopedOnCall(page, baseURL);
+    await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(1);
+    const scopedHits = seen.filter((u) => u.includes(`project_id=${SCOPED_PROJECT_ID}`));
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(scopedHits.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('global fetch omits ?project_id (unscoped view)', async ({ page, baseURL }) => {
+    const seen: string[] = [];
+    await mockScopedApi(page, seen);
+    await gotoOnCall(page, baseURL);
+    await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(2);
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(seen.every((u) => !u.includes('project_id='))).toBe(true);
+  });
+});

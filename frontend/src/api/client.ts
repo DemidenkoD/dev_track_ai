@@ -493,15 +493,19 @@ export async function diagnoseOnCall(
 /**
  * Lists persisted Alertmanager incidents for the History tab (newest first).
  * `status` filters to `firing` | `acknowledged` | `resolved`; `limit` is 1–200.
+ * `projectId` scopes to a single project via `?project_id` (omitted = global,
+ * backward-compatible).
  */
 export async function listOnCallIncidents(
   status?: OnCallIncidentStatus | 'all',
   limit?: number,
+  projectId?: string,
 ): Promise<OnCallIncident[]> {
   return request<OnCallIncident[]>('/api/v1/oncall/incidents', {
     query: {
       status: status == null || status === 'all' ? undefined : status,
       limit,
+      project_id: projectId ?? undefined,
     },
   });
 }

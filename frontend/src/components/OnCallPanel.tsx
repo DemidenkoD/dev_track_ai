@@ -67,14 +67,14 @@ function formatDate(iso: string): string {
  * only adjust the scope-note copy + link. The global `/oncall` route renders
  * `<OnCallPanel />` with defaults (generic text, no link).
  */
-// TODO(Part B): add optional `projectId?: string` filter prop here once the
-// Track 1 `?project_id` contract lands — wire it through to
-// `listOnCallIncidents()` so the project tab shows only its own alerts.
+// Part B wired: optional `projectId` filter prop scopes the history list via
+// `listOnCallIncidents(status, 50, projectId)` (`?project_id`); omitted = global.
 export interface OnCallPanelProps {
+  projectId?: string;
   projectName?: string;
   securityTabHref?: string;
 }
-export function OnCallPanel({ projectName, securityTabHref }: OnCallPanelProps = {}): JSX.Element {
+export function OnCallPanel({ projectId, projectName, securityTabHref }: OnCallPanelProps = {}): JSX.Element {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [incidents, setIncidents] = useState<OnCallIncident[]>([]);
   const [listLoading, setListLoading] = useState(true);
@@ -102,7 +102,7 @@ export function OnCallPanel({ projectName, securityTabHref }: OnCallPanelProps =
       if (!silent) setListLoading(true);
       setListError(null);
       try {
-        const rows = await listOnCallIncidents(statusFilter, 50);
+        const rows = await listOnCallIncidents(statusFilter, 50, projectId);
         setIncidents(rows);
       } catch (err) {
         if (!silent) setListError(err instanceof ApiError ? err.message : 'Failed to load alert history.');
@@ -110,7 +110,7 @@ export function OnCallPanel({ projectName, securityTabHref }: OnCallPanelProps =
         if (!silent) setListLoading(false);
       }
     },
-    [statusFilter],
+    [statusFilter, projectId],
   );
 
   useEffect(() => {
@@ -223,6 +223,13 @@ export function OnCallPanel({ projectName, securityTabHref }: OnCallPanelProps =
           </>
         ) : null}
       </p>
+
+      {projectId ? (
+        <p data-testid="history-project-filter" className="muted small">
+          Showing alerts for {projectName ?? 'this project'}{' '}
+          <a href="/oncall">View all alerts</a>
+        </p>
+      ) : null}
 
       <div className="card stack">
         <header className="card-header">

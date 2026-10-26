@@ -383,7 +383,7 @@ export function ProjectDetailPage(): JSX.Element {
         />
       )}
       {tab === 'oncall' && (
-        <OnCallPanel projectName={project.name} securityTabHref="?tab=security" />
+        <OnCallPanel projectId={project.id} projectName={project.name} securityTabHref="?tab=security" />
       )}
       {tab === 'settings' && (
         <ProjectSettingsPanel project={project} onUpdated={(updated) => setProject(updated)} />
