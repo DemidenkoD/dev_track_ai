@@ -394,8 +394,10 @@ volumes:
   grafana_data_prod:
   certs:
     external: true
+    name: devtrack-ai-prod_certs
   certbot_www:
     external: true
+    name: devtrack-ai-prod_certbot_www
 
 networks:
   app:
