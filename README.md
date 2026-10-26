@@ -17,7 +17,8 @@
 DevTrack AI is deployed live on a public cloud VPS with full HTTPS, edge TLS termination, automated Certbot renewal, and OpenTelemetry instrumentation:
 
 - **Live Application URL:** https://ct-academia.pl
-- **Backend Health Probe:** https://ct-academia.pl/api/v1/health
+- **Live On-Call Incident Triage UI:** https://ct-academia.pl/oncall
+- **Backend Health & Telemetry Probe:** https://ct-academia.pl/api/v1/health
 - **Edge Health Probe:** https://ct-academia.pl/healthz
 - **OpenAPI Specification Docs:** https://ct-academia.pl/docs
 - **Predefined Reviewer Credentials:**
@@ -99,6 +100,34 @@ make up
 ```bash
 pytest && npm --prefix frontend run typecheck && (cd frontend && npx playwright test)
 ```
+
+---
+
+## Observability, Telemetry & On-Call Agent (Rubric #10, #11, #12)
+
+DevTrack AI implements full four-pillar observability (**Metrics, Logs, Traces, Dashboards**) correlated by a single 32-character hexadecimal `trace_id`, paired with an autonomous, bounded read-only AI diagnostic agent.
+
+### Telemetry Stack Architecture
+
+- **Metrics (Prometheus):** Instruments `http_requests_total`, `http_request_duration_seconds`, `analysis_runs_completed_total`, and `analysis_runs_failed_total` scraped via `GET /metrics`.
+- **Logs (Loki):** Structured logs with `trace_id=...` are shipped non-blockingly to Loki (`{app="backend"}`, `{app="worker"}`) with automated scrubbing of sensitive emails, tokens, and keys.
+- **Traces (Tempo):** OpenTelemetry Python SDK exports traces over OTLP gRPC (`:4317`) to Grafana Tempo, propagating span context across API requests and analysis jobs.
+- **Visual Dashboards (Grafana):** Pre-provisioned `DevTrack AI — User-Impact Overview` dashboard correlating 5xx rates, latency spikes, and worker queue lag.
+- **User-Impact Alerting:** 4 SLO-driven Prometheus alert rules (`HighHttp5xxErrorRate`, `HighApiLatencyP95`, `AnalysisWorkerJobFailures`, `TargetDeploymentDown`).
+- **Bounded Read-Only On-Call Agent:** `backend/app/agents/oncall_agent.py` queries Prometheus, Loki, and Tempo in real time to diagnose active incidents without mutating production state.
+
+### Observability Links & Verification
+
+| Capability | Local Development (`make up`) | Live Production VPS (`ct-academia.pl`) |
+| :--- | :--- | :--- |
+| **On-Call Triage UI** | [`http://localhost:5173/oncall`](http://localhost:5173/oncall) | **[`https://ct-academia.pl/oncall`](https://ct-academia.pl/oncall)** *(or Project Detail → On-Call tab)* |
+| **On-Call Diagnose API** | `http://localhost:8000/api/v1/oncall/diagnose` | **[`https://ct-academia.pl/api/v1/oncall/diagnose`](https://ct-academia.pl/api/v1/oncall/diagnose)** |
+| **Backend Health Probe** | `http://localhost:8000/api/v1/health` | **[`https://ct-academia.pl/api/v1/health`](https://ct-academia.pl/api/v1/health)** |
+| **Edge Health Probe** | `http://localhost/healthz` | **[`https://ct-academia.pl/healthz`](https://ct-academia.pl/healthz)** |
+| **Grafana Dashboard** | [`http://localhost:3000`](http://localhost:3000) *(admin / `devtrack-zoomcamp-2026`)* | Internal Docker network. Forward via: `ssh -L 3000:localhost:3000 <user>@ct-academia.pl` |
+| **Prometheus & Alerts** | [`http://localhost:9090`](http://localhost:9090) / [`/alerts`](http://localhost:9090/alerts) | Internal Docker network. Forward via: `ssh -L 9090:localhost:9090 <user>@ct-academia.pl` |
+| **Tempo Trace Receiver** | `http://localhost:3200` *(OTLP gRPC `:4317`)* | Internal Docker network (`tempo:4317`) |
+| **Loki Log Ingestion** | `http://localhost:3100/ready` | Internal Docker network (`loki:3100`) |
 
 ---
 
