@@ -229,6 +229,12 @@ services:
         condition: service_healthy
       frontend:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
     networks: [app]
 
   prometheus:
@@ -331,16 +337,16 @@ services:
       - tempo_data_prod:/var/tempo
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3200/ready || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
         reservations:
-          memory: 128M
+          memory: 256M
     networks: [app]
 
   grafana:
@@ -376,7 +382,7 @@ services:
       loki:
         condition: service_healthy
       tempo:
-        condition: service_healthy
+        condition: service_started
     networks: [app]
 
 volumes:
@@ -387,7 +393,9 @@ volumes:
   tempo_data_prod:
   grafana_data_prod:
   certs:
+    external: true
   certbot_www:
+    external: true
 
 networks:
   app:

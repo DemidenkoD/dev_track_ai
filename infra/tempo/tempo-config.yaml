@@ -23,3 +23,9 @@ storage:
 compactor:
   compaction:
     block_retention: 24h
+
+ingester:
+  # Cut live head blocks earlier so WAL replay + compaction stay small on a
+  # 512M-capped VPS container (vParquet4 WAL replay OOM fix).
+  max_block_duration: 10m
+  max_block_bytes: 52428800 # 50MB
