@@ -91,6 +91,11 @@ services:
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
       ANALYSIS_TIMEOUT_SECONDS: ${ANALYSIS_TIMEOUT_SECONDS:-300}
       MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-250}
+      # Alertmanager webhook auth: backend verifies
+      # `Authorization: Bearer <ALERTMANAGER_WEBHOOK_SECRET>` on POST /api/v1/oncall/webhook.
+      # Same host .env value as the alertmanager service below. Empty default = fail-closed (backend 401s all webhooks).
+      # Operator: set strong `openssl rand -hex 32` in host .env, restart both services. Never commit the real value.
+      ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET:-}
     volumes:
       - ./docs:/docs:ro
     ports:
@@ -247,11 +252,12 @@ services:
       - "--cluster.listen-address="   # single node: disable HA clustering (no :9094)
     # REQUIRED env (Track 1 reads the same var in backend):
     # ALERTMANAGER_WEBHOOK_SECRET — shared secret the backend webhook verifies
-    # via `Authorization: Bearer <secret>`. Dev-only default keeps
-    # `docker compose config` green with no .env entry. PRODUCTION: set a
-    # strong random value in host .env — never commit the real value.
+    # via `Authorization: Bearer <secret>`.
+    # Empty default = backend 401s all webhooks until operator sets strong secret in host .env (fail-closed, never guessable).
+    # Operator: set a strong random value in host .env (e.g. `openssl rand -hex 32`)
+    # for both backend + alertmanager containers — never commit the real value.
     environment:
-      ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET:-changeme-dev-only}
+      ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET:-}
     volumes:
       - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager

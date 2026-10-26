@@ -19,11 +19,18 @@
 # ENV TEMPLATING NOTES (image: prom/alertmanager:v0.27.0):
 #   - This binary expands $VAR / ${VAR} in the config file at load time
 #     (os.ExpandEnv semantics). The `:-default` Bash-style fallback is NOT
-#     supported by that expander, so the dev-only default
-#     (`changeme-dev-only`) lives in the compose `environment:` mapping
-#     (compose DOES support `:-`), which guarantees the variable is always
-#     set inside the container. Never commit a real secret value here or in
-#     compose — production sets ALERTMANAGER_WEBHOOK_SECRET in host .env.
+#     supported by that expander, so the default lives in the compose
+#     `environment:` mapping (compose DOES support `:-`), which guarantees
+#     the variable is always set inside the container. Never commit a real
+#     secret value here or in compose.
+#   - FAIL-CLOSED DEFAULT: compose injects an EMPTY default
+#     (`${ALERTMANAGER_WEBHOOK_SECRET:-}`). With no host .env entry,
+#     Alertmanager sends an empty Bearer token and Track 1's webhook
+#     correctly 401s every delivery (safe; visible as failed deliveries in
+#     the Alertmanager log/UI). No guessable dev secret exists to attack.
+#     Operator MUST set a strong random value (e.g. `openssl rand -hex 32`)
+#     as ALERTMANAGER_WEBHOOK_SECRET in host .env for BOTH the backend and
+#     alertmanager containers. Do NOT commit a real secret.
 #   - FALLBACK (documented, not active): if a future Alertmanager version
 #     drops header support, switch to a query-param secret:
 #       url: 'http://backend:8000/api/v1/oncall/webhook?secret=${ALERTMANAGER_WEBHOOK_SECRET}'

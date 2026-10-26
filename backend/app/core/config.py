@@ -205,7 +205,8 @@ class Settings(BaseSettings):
     # `X-Alertmanager-Secret` header (no user JWT). The raw value is
     # never logged, printed, or included in errors/traces — only a
     # boolean mismatch (401) is observable.
-    ALERTMANAGER_WEBHOOK_SECRET: str = "change-me-alertmanager-secret"
+    # Fail-closed default: must be set in .env, never commit.
+    ALERTMANAGER_WEBHOOK_SECRET: str = ""
 
     @property
     def access_token_expire_seconds(self) -> int:

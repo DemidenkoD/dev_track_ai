@@ -141,6 +141,71 @@ class TestWebhookAuthGate:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Fail-closed defaults: empty/placeholder secrets never authenticate
+# ---------------------------------------------------------------------------
+class TestWebhookFailClosedDefaults:
+    def test_shipped_default_is_empty_fail_closed(self):
+        """The committed default must be "" (fail-closed, never a real secret)."""
+        from app.core.config import Settings
+
+        default = Settings.model_fields["ALERTMANAGER_WEBHOOK_SECRET"].default
+        assert default == "", f"fail-closed default changed: {default!r}"
+
+    def test_empty_configured_secret_rejects_everything(
+        self, isolated_client, monkeypatch
+    ):
+        """Default-equivalent empty secret → 401 with or without a header."""
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        monkeypatch.setattr(
+            settings, "ALERTMANAGER_WEBHOOK_SECRET", "", raising=False
+        )
+        client, _ = isolated_client
+        assert (
+            _post_webhook(client, _webhook_payload(), "anything-at-all").status_code
+            == 401
+        )
+        assert _post_webhook(client, _webhook_payload(), None).status_code == 401
+
+    def test_placeholder_changeme_dev_only_rejects(
+        self, isolated_client, monkeypatch
+    ):
+        """Placeholder 'changeme-dev-only' never authenticates, even on match."""
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        monkeypatch.setattr(
+            settings,
+            "ALERTMANAGER_WEBHOOK_SECRET",
+            "changeme-dev-only",
+            raising=False,
+        )
+        client, _ = isolated_client
+        resp = _post_webhook(client, _webhook_payload(), "changeme-dev-only")
+        assert resp.status_code == 401, resp.text[:300]
+
+    def test_placeholder_change_me_alertmanager_secret_rejects(
+        self, isolated_client, monkeypatch
+    ):
+        """Placeholder 'change-me-alertmanager-secret' never authenticates."""
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        monkeypatch.setattr(
+            settings,
+            "ALERTMANAGER_WEBHOOK_SECRET",
+            "change-me-alertmanager-secret",
+            raising=False,
+        )
+        client, _ = isolated_client
+        resp = _post_webhook(
+            client, _webhook_payload(), "change-me-alertmanager-secret"
+        )
+        assert resp.status_code == 401, resp.text[:300]
+
+
+# ---------------------------------------------------------------------------
 # 2. Dedupe: same (fingerprint, startsAt) updates, never duplicates
 # ---------------------------------------------------------------------------
 class TestWebhookDedupe:

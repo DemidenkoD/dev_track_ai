@@ -199,7 +199,7 @@ export function OnCallPanel(): JSX.Element {
   }
 
   return (
-    <section aria-label="Alert history" className="stack">
+    <section aria-label="Alert history" className="stack" data-testid="incident-history">
       <AdvisoryBanner detail="Alert History is read-only and advisory. Diagnoses explain past alerts and propose human-approved next steps — nothing is executed automatically." />
 
       <div className="card stack">
@@ -214,6 +214,15 @@ export function OnCallPanel(): JSX.Element {
           {STATUS_FILTERS.map((f) => (
             <button
               key={f.id}
+              data-testid={
+                f.id === 'all'
+                  ? 'filter-all'
+                  : f.id === 'firing'
+                    ? 'filter-firing'
+                    : f.id === 'acknowledged'
+                      ? 'filter-acknowledged'
+                      : 'filter-resolved'
+              }
               className={statusFilter === f.id ? 'tab tab-active' : 'tab'}
               onClick={() => setStatusFilter(f.id)}
               aria-pressed={statusFilter === f.id}
@@ -232,21 +241,27 @@ export function OnCallPanel(): JSX.Element {
         {listLoading ? (
           <p aria-live="polite">Loading alerts…</p>
         ) : incidents.length === 0 ? (
-          <p className="muted" aria-live="polite">
+          <p className="muted" aria-live="polite" data-testid="incident-empty">
             No alerts yet — system healthy
           </p>
         ) : (
-          <ul className="run-list" aria-label="Alerts, newest first">
+          <ul className="run-list" aria-label="Alerts, newest first" data-testid="incident-list">
             {incidents.map((incident) => (
-              <li key={incident.id}>
+              <li
+                key={incident.id}
+                data-testid="incident-row"
+                data-incident={incident.id}
+                data-status={incident.status}
+              >
                 <button
+                  data-testid={`incident-open-${incident.id}`}
                   className={selectedId === incident.id ? 'tab tab-active' : 'tab'}
                   onClick={() => void handleSelect(incident)}
                   aria-expanded={selectedId === incident.id}
                   style={{ width: '100%', textAlign: 'left' }}
                 >
-                  <span className={statusBadgeClass(incident.status)}>{statusLabel(incident.status)}</span>{' '}
-                  <span className={severityBadgeClass(incident.severity)}>{incident.severity}</span>{' '}
+                  <span className={statusBadgeClass(incident.status)} data-testid="incident-status-badge">{statusLabel(incident.status)}</span>{' '}
+                  <span className={severityBadgeClass(incident.severity)} data-testid="incident-severity">{incident.severity}</span>{' '}
                   <strong>{incident.service}</strong>{' '}
                   <span className="muted small">{incident.alert_name}</span>
                   <br />
@@ -262,7 +277,13 @@ export function OnCallPanel(): JSX.Element {
       </div>
 
       {selectedId && (
-        <article className="card stack" aria-label="Alert details" aria-live="polite">
+        <article
+          className="card stack"
+          aria-label="Alert details"
+          aria-live="polite"
+          data-testid="incident-detail"
+          data-incident={selectedId ?? ''}
+        >
           {detailLoading && <p>Loading alert details…</p>}
           {detailError && (
             <p className="error" role="alert">
@@ -288,19 +309,20 @@ export function OnCallPanel(): JSX.Element {
                   <span
                     className="badge badge-verified"
                     title="The agent performed read-only inspection only"
+                    data-testid="read-only-badge"
                   >
                     Read-only — human must approve
                   </span>
                 </p>
               ) : (
                 <p>
-                  <span className="badge badge-needs-review">Read-only unverified</span>
+                  <span className="badge badge-needs-review" data-testid="read-only-badge">Read-only unverified</span>
                 </p>
               )}
 
               <div>
                 <h4>What happened</h4>
-                <p>{detail.diagnosis.incident_summary || 'No summary available yet.'}</p>
+                <p data-testid="incident-summary">{detail.diagnosis.incident_summary || 'No summary available yet.'}</p>
               </div>
 
               <div>
@@ -343,9 +365,9 @@ export function OnCallPanel(): JSX.Element {
                   <p className="muted small">No actions recommended.</p>
                 ) : (
                   <>
-                    <ol>
+                    <ol data-testid="remediation-plan">
                       {detail.diagnosis.recommended_actions.map((action, i) => (
-                        <li key={i}>{action}</li>
+                        <li key={i} data-testid="remediation-step">{action}</li>
                       ))}
                     </ol>
                     <button className="btn btn-secondary" onClick={() => void handleCopyRunbook()}>
@@ -363,6 +385,7 @@ export function OnCallPanel(): JSX.Element {
                 <label>
                   Note (optional)
                   <textarea
+                    data-testid="acknowledge-note"
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
                     rows={2}
@@ -376,6 +399,7 @@ export function OnCallPanel(): JSX.Element {
                 )}
                 <div className="modal-actions">
                   <button
+                    data-testid="acknowledge-button"
                     className="btn btn-primary"
                     onClick={() => void handleAcknowledge()}
                     disabled={ackLoading || detail.status === 'acknowledged'}
@@ -387,6 +411,9 @@ export function OnCallPanel(): JSX.Element {
                         : 'Acknowledge'}
                   </button>
                 </div>
+                <p data-testid="acknowledge-state" className="muted small" aria-live="polite">
+                  Status: {detail.status}
+                </p>
               </div>
             </>
           )}

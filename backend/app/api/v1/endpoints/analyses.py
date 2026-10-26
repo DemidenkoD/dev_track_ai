@@ -166,6 +166,20 @@ def _poll_and_send_same_process(
     else:  # pragma: no cover - no session factory; purge without waiting
         timed_out = True
 
+    # Metrics visibility fix (cross-process counter bug): worker/runner.py
+    # increments analysis_runs_failed_total in WORKER process memory, but
+    # Prometheus scrapes backend:8000 /metrics (BACKEND process memory, always
+    # 0), so AnalysisWorkerJobFailures could never fire. This poll loop runs
+    # in the backend/API process, so recording the outcome here makes the
+    # backend counter visible to Prometheus. Called exactly once per run
+    # (timeout path counts as ok=False); never double-count in this process.
+    try:
+        from app.core.telemetry import record_analysis_run_outcome as _record_outcome
+
+        _record_outcome(status_str == AnalysisStatus.COMPLETED.value)
+    except Exception:
+        pass
+
     if timed_out:
         # Purge-first send_and_purge guarantees no leak even on timeout.
         telemetry_logger.warning(

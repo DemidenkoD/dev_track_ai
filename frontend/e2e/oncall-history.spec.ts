@@ -1,22 +1,31 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page, type Route } from '@playwright/test';
 
 /**
- * Track 5 On-Call History tab spec — stubbed, no live backend required.
+ * Track 5 On-Call History tab spec — REAL UI (Track 4 testids) + API mocks.
  *
  * Covers docs/specs/API_CONTRACT.md §8 (Phase 4b) against the locked
  * OnCallIncident shape (backend/app/schemas/api_contracts.py):
- *   1. History list loads and renders persisted incidents.
- *   2. ?status= filter narrows the list; ?limit= caps it.
+ *   1. History list loads and renders persisted incidents (real /oncall page).
+ *   2. ?status= filter narrows the list; ?limit= caps it (route-mocked).
  *   3. Detail view opens with the read-only diagnosis + numbered
  *      remediation plan steps (recommended_actions, display text only).
  *   4. Acknowledge button marks the incident acknowledged with a note.
  *   5. Redaction: persisted payloads carry [redacted-*] markers and no raw
  *      email / JWT / Bearer values.
+ *   6. Empty list renders the incident-empty healthy state.
  *
- * The live UI tests render stub HTML (the same data-testid contract Track 4
- * wires the real History tab to) and skip gracefully when the Vite dev
- * server is not running; the pure contract checks always run so
- * `npx playwright test` never goes silently green on skip.
+ * Strategy: navigate to the REAL /oncall route (OnCallPage → OnCallPanel),
+ * intercept /api/v1/oncall/incidents* + /api/v1/auth/me with the locked
+ * shape, and assert the REAL data-testid contract Track 4 wired:
+ * incident-history/list/row/open/status-badge/severity,
+ * filter-all/firing/acknowledged/resolved, incident-detail/summary,
+ * remediation-plan/step, read-only-badge, acknowledge-note/button/state,
+ * incident-empty.
+ *
+ * No live backend is required (all API responses are mocked), but the Vite
+ * dev server MUST be running (playwright.config.ts webServer boots it).
+ * The pure contract checks always run so `npx playwright test` never goes
+ * silently green on skip.
  */
 
 interface TelemetryCitation {
@@ -107,61 +116,109 @@ const STUB_DETAIL: OnCallIncidentDetail = {
       { source: 'loki', query: '{app="worker"} |= "ERROR"', excerpt: 'TimeoutError at 10:01' },
     ],
     recommended_actions: [
-      '1. Check worker logs for TimeoutError lines around the alert window (read-only).',
-      '2. Check the Prometheus error-rate dashboard for the same window.',
-      '3. Ask a human to approve any restart or scaling change.',
+      'Check worker logs for TimeoutError lines around the alert window (read-only).',
+      'Check the Prometheus error-rate dashboard for the same window.',
+      'Ask a human to approve any restart or scaling change.',
     ],
     read_only_verified: true,
   },
 };
 
-function renderHistoryListStub(incidents: OnCallIncident[]): string {
-  const rows = incidents
-    .map(
-      (i) => `<article data-testid="incident-row" data-incident="${i.id}" data-status="${i.status}">
-        <h3>${i.alert_name}</h3>
-        <span data-testid="incident-status-badge">${i.status}</span>
-        <span data-testid="incident-severity">${i.severity}</span>
-        <button data-testid="incident-open-${i.id}">Open detail</button>
-      </article>`,
-    )
-    .join('\n');
-  return `<!doctype html><html><body>
-    <div data-testid="incident-history" role="tab" aria-selected="true">Incident history</div>
-    <div role="tablist">
-      <button role="tab" data-testid="filter-all" aria-selected="true">All</button>
-      <button role="tab" data-testid="filter-firing" aria-selected="false">Firing</button>
-      <button role="tab" data-testid="filter-acknowledged" aria-selected="false">Acknowledged</button>
-      <button role="tab" data-testid="filter-resolved" aria-selected="false">Resolved</button>
-    </div>
-    <section data-testid="incident-list">${rows}</section>
-  </body></html>`;
+function jsonFulfill(route: Route, body: unknown, status = 200): Promise<void> {
+  return route.fulfill({
+    status,
+    contentType: 'application/json',
+    body: JSON.stringify(body),
+  });
 }
 
-function renderIncidentDetailStub(detail: OnCallIncidentDetail): string {
-  const steps = detail.diagnosis.recommended_actions
-    .map((a) => `<li data-testid="remediation-step">${a}</li>`)
-    .join('\n');
-  return `<!doctype html><html><body>
-    <article data-testid="incident-detail" data-incident="${detail.id}">
-      <h2>${detail.alert_name}</h2>
-      ${detail.diagnosis.read_only_verified ? '<span data-testid="read-only-badge">Read-only verified</span>' : ''}
-      <p data-testid="incident-summary">${detail.diagnosis.incident_summary}</p>
-      <ol data-testid="remediation-plan">${steps}</ol>
-      <label>Note <input data-testid="acknowledge-note" type="text" value="" /></label>
-      <button data-testid="acknowledge-button">Acknowledge</button>
-      <span data-testid="acknowledge-state">${detail.status}</span>
-    </article>
-    <script>
-      document.querySelector('[data-testid="acknowledge-button"]').addEventListener('click', () => {
-        const note = document.querySelector('[data-testid="acknowledge-note"]').value;
-        document.querySelector('[data-testid="acknowledge-state"]').textContent = 'acknowledged:' + note;
-      });
-    </script>
-  </body></html>`;
+/** Mock auth + on-call API against the REAL /oncall page. */
+async function mockOnCallApi(
+  page: Page,
+  opts: { incidents?: OnCallIncident[]; detail?: OnCallIncidentDetail } = {},
+): Promise<void> {
+  const incidents = opts.incidents ?? STUB_INCIDENTS;
+  const detail = opts.detail ?? STUB_DETAIL;
+
+  await page.route('**/api/v1/auth/me', (route) =>
+    jsonFulfill(route, { username: 'reviewer@datatalks.club', role: 'reviewer' }),
+  );
+
+  // NOTE: glob `*` never crosses `/`, so `incidents*` would miss
+  // `incidents/{id}` + `.../acknowledge`. A pathname predicate covers all.
+  await page.route(
+    (url) => url.pathname.includes('/api/v1/oncall/incidents'),
+    (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    const pathname = url.pathname;
+
+    // POST .../incidents/{id}/acknowledge → acknowledged detail.
+    if (req.method() === 'POST' && pathname.endsWith('/acknowledge')) {
+      let note: string | null = 'Investigating 5xx spike';
+      try {
+        const posted = req.postDataJSON() as { note?: string | null } | null;
+        if (posted && 'note' in posted) note = posted.note ?? null;
+      } catch {
+        // keep default note
+      }
+      const acknowledged: OnCallIncidentDetail = {
+        ...detail,
+        status: 'acknowledged',
+        acknowledge_note: note,
+        updated_at: '2026-10-26T10:30:00.000Z',
+      };
+      return jsonFulfill(route, acknowledged);
+    }
+
+    // GET .../incidents/{id} → full detail with diagnosis + plan.
+    const detailMatch = pathname.match(/\/api\/v1\/oncall\/incidents\/([^/]+)$/);
+    if (req.method() === 'GET' && detailMatch) {
+      return jsonFulfill(route, detail);
+    }
+
+    // GET .../incidents?status=&limit= → filtered list (newest first).
+    if (req.method() === 'GET' && pathname.endsWith('/oncall/incidents')) {
+      const status = url.searchParams.get('status');
+      const limitRaw = url.searchParams.get('limit');
+      let rows = [...incidents];
+      if (status && status !== 'all') rows = rows.filter((i) => i.status === status);
+      const limit = limitRaw ? Number.parseInt(limitRaw, 10) : rows.length;
+      if (Number.isFinite(limit)) rows = rows.slice(0, limit);
+      return jsonFulfill(route, rows);
+    }
+
+    return route.fallback();
+    },
+  );
+
+  // Seed the predefined-reviewer token BEFORE the app boots so
+  // ProtectedRoute → fetchCurrentUser() succeeds via the mock above.
+  await page.addInitScript(() => {
+    try {
+      window.localStorage.setItem('devtrack.auth.token', 'e2e-oncall-token');
+    } catch {
+      // storage unavailable — auth mock still covers /auth/me
+    }
+  });
 }
 
-test.describe('on-call history tab (stubbed, no backend)', () => {
+/** Base URL for the REAL UI. Honors E2E_BASE_URL so the suite can target a
+ *  fresh `vite dev` instance when :5173 serves a stale static build. */
+function e2eBaseUrl(baseURL: string | undefined): string {
+  return process.env.E2E_BASE_URL ?? baseURL ?? 'http://localhost:5173';
+}
+
+async function gotoOnCall(page: Page, baseURL: string | undefined): Promise<void> {
+  await page.goto(`${e2eBaseUrl(baseURL)}/oncall`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 15000,
+  });
+  // The real panel root must mount (Track 4 data-testid contract).
+  await expect(page.getByTestId('incident-history')).toBeVisible({ timeout: 15000 });
+}
+
+test.describe('on-call history tab (real UI, mocked API)', () => {
   test('locked incident shape carries History-tab fields', () => {
     for (const inc of STUB_INCIDENTS) {
       expect(inc.id).toMatch(/^[0-9a-f-]{36}$/);
@@ -197,95 +254,87 @@ test.describe('on-call history tab (stubbed, no backend)', () => {
     expect(limited).toHaveLength(1);
   });
 
-  test('history tab loads and shows the incident list (skips if frontend down)', async ({
+  test('history tab loads and shows the incident list (real UI)', async ({
     page,
     baseURL,
   }) => {
-    let reachable = true;
-    try {
-      const response = await page.goto(baseURL ?? 'http://localhost:5173', {
-        waitUntil: 'domcontentloaded',
-        timeout: 8000,
-      });
-      reachable = response !== null && response.ok();
-    } catch {
-      reachable = false;
-    }
-    test.skip(!reachable, 'Frontend dev server not running (Track 4 dep) — skipping.');
-    await page.setContent(renderHistoryListStub(STUB_INCIDENTS));
-    await expect(page.getByTestId('incident-history')).toBeVisible();
+    await mockOnCallApi(page);
+    await gotoOnCall(page, baseURL);
     await expect(page.getByTestId('incident-list')).toContainText('HighHttp5xxErrorRate');
-    await expect(page.getByTestId('incident-list')).toContainText('AnalysisWorkerJobFailures');
+    await expect(page.getByTestId('incident-list')).toContainText(
+      'AnalysisWorkerJobFailures',
+    );
     await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(2);
+    // Real status/severity badges render per row.
+    await expect(page.getByTestId('incident-status-badge').first()).toBeVisible();
+    await expect(page.getByTestId('incident-severity').first()).toBeVisible();
+    // All four filter tabs are part of the real contract.
+    for (const filterId of [
+      'filter-all',
+      'filter-firing',
+      'filter-acknowledged',
+      'filter-resolved',
+    ]) {
+      await expect(page.getByTestId(filterId)).toBeVisible();
+    }
   });
 
-  test('status filter tabs narrow the visible rows (skips if frontend down)', async ({
+  test('status filter tabs narrow the visible rows (real UI)', async ({
     page,
     baseURL,
   }) => {
-    let reachable = true;
-    try {
-      const response = await page.goto(`${baseURL ?? 'http://localhost:5173'}/oncall`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 8000,
-      });
-      reachable = response !== null;
-    } catch {
-      reachable = false;
-    }
-    test.skip(!reachable, 'Frontend dev server not running (Track 4 dep) — skipping.');
-    await page.setContent(renderHistoryListStub(STUB_INCIDENTS));
-    await expect(page.getByTestId('filter-firing')).toBeVisible();
-    await expect(page.getByTestId('filter-acknowledged')).toBeVisible();
-    await page.setContent(
-      renderHistoryListStub(STUB_INCIDENTS.filter((i) => i.status === 'firing')),
-    );
+    await mockOnCallApi(page);
+    await gotoOnCall(page, baseURL);
+    await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(2);
+    await page.getByTestId('filter-firing').click();
+    // Component re-fetches ?status=firing → mock returns the 1 firing row.
     await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(1);
     await expect(page.getByTestId('incident-list')).toContainText('HighHttp5xxErrorRate');
+    await expect(page.getByTestId('incident-list')).not.toContainText(
+      'AnalysisWorkerJobFailures',
+    );
   });
 
-  test('detail opens with remediation plan steps (skips if frontend down)', async ({
+  test('detail opens with remediation plan steps (real UI)', async ({
     page,
     baseURL,
   }) => {
-    let reachable = true;
-    try {
-      const response = await page.goto(`${baseURL ?? 'http://localhost:5173'}/oncall`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 8000,
-      });
-      reachable = response !== null;
-    } catch {
-      reachable = false;
-    }
-    test.skip(!reachable, 'Frontend dev server not running (Track 4 dep) — skipping.');
-    await page.setContent(renderIncidentDetailStub(STUB_DETAIL));
-    await expect(page.getByTestId('read-only-badge')).toContainText('Read-only verified');
-    await expect(page.getByTestId('incident-summary')).toContainText('HighHttp5xxErrorRate');
+    await mockOnCallApi(page);
+    await gotoOnCall(page, baseURL);
+    await page.getByTestId(`incident-open-${STUB_INCIDENTS[0].id}`).click();
+    await expect(page.getByTestId('incident-detail')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('read-only-badge')).toContainText(/read-only/i);
+    await expect(page.getByTestId('incident-summary')).toContainText(
+      'HighHttp5xxErrorRate',
+    );
     await expect(page.getByTestId('remediation-plan')).toBeVisible();
     await expect(page.locator('[data-testid="remediation-step"]')).toHaveCount(3);
   });
 
-  test('acknowledge button marks incident acknowledged with note (skips if frontend down)', async ({
+  test('acknowledge button marks incident acknowledged with note (real UI)', async ({
     page,
     baseURL,
   }) => {
-    let reachable = true;
-    try {
-      const response = await page.goto(`${baseURL ?? 'http://localhost:5173'}/oncall`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 8000,
-      });
-      reachable = response !== null;
-    } catch {
-      reachable = false;
-    }
-    test.skip(!reachable, 'Frontend dev server not running (Track 4 dep) — skipping.');
-    await page.setContent(renderIncidentDetailStub(STUB_DETAIL));
+    await mockOnCallApi(page);
+    await gotoOnCall(page, baseURL);
+    await page.getByTestId(`incident-open-${STUB_INCIDENTS[0].id}`).click();
+    await expect(page.getByTestId('incident-detail')).toBeVisible({ timeout: 15000 });
     await page.getByTestId('acknowledge-note').fill('Investigating 5xx spike');
     await page.getByTestId('acknowledge-button').click();
-    await expect(page.getByTestId('acknowledge-state')).toContainText(
-      'acknowledged:Investigating 5xx spike',
-    );
+    // Real component flips the state line to "Status: acknowledged".
+    await expect(page.getByTestId('acknowledge-state')).toContainText('acknowledged', {
+      timeout: 15000,
+    });
+    await expect(page.getByTestId('acknowledge-button')).toContainText('Acknowledged');
+  });
+
+  test('empty history renders the healthy empty state (real UI)', async ({
+    page,
+    baseURL,
+  }) => {
+    await mockOnCallApi(page, { incidents: [] });
+    await gotoOnCall(page, baseURL);
+    await expect(page.getByTestId('incident-empty')).toContainText(/no alerts yet/i);
+    await expect(page.locator('[data-testid="incident-row"]')).toHaveCount(0);
   });
 });

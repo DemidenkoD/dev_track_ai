@@ -16,6 +16,7 @@ before persistence; no email column exists on oncall_incidents.
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from datetime import datetime, timezone
@@ -42,6 +43,16 @@ from app.schemas.api_contracts import (
 from app.schemas.enums import OnCallIncidentStatus
 
 router = APIRouter(tags=["oncall"])
+
+logger = logging.getLogger("devtrack.oncall")
+
+# Known placeholder webhook secrets that must never authenticate (fail-closed).
+_PLACEHOLDER_WEBHOOK_SECRETS: frozenset[str] = frozenset(
+    {
+        "change-me-alertmanager-secret",
+        "changeme-dev-only",
+    }
+)
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9\-._~+/=]+", re.IGNORECASE)
@@ -89,6 +100,14 @@ def _check_webhook_secret(
     """
     settings = get_settings()
     expected = (settings.ALERTMANAGER_WEBHOOK_SECRET or "").strip()
+    if not expected or expected.lower() in _PLACEHOLDER_WEBHOOK_SECRETS:
+        # Fail-closed: unconfigured or placeholder secret never authenticates.
+        # No secret value is logged or echoed.
+        logger.warning("webhook secret not configured, rejecting")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Alertmanager webhook secret",
+        )
     provided = ""
     if authorization and authorization.lower().startswith("bearer "):
         provided = authorization[7:].strip()
