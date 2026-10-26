@@ -21,6 +21,7 @@ DevTrack AI is deployed live on a public cloud VPS with full HTTPS, edge TLS ter
 - **Backend Health & Telemetry Probe:** https://ct-academia.pl/api/v1/health
 - **Edge Health Probe:** https://ct-academia.pl/healthz
 - **OpenAPI Specification Docs:** https://ct-academia.pl/docs
+- **Public Task Tracker (GitHub Projects):** https://github.com/users/DemidenkoD/projects/4/views/1 *(Groomed backlog, issues with acceptance criteria, and closed PR evidence)*
 - **Predefined Reviewer Credentials:**
   - **Username:** `reviewer@datatalks.club` *(or configured via `ADMIN_USERNAME` in `.env`)*
   - **Password:** `devtrack-zoomcamp-2026` *(or configured via `ADMIN_PASSWORD` in `.env`)*
@@ -36,7 +37,7 @@ DevTrack AI is deployed live on a public cloud VPS with full HTTPS, edge TLS ter
 | # | Rubric Criterion | Max | Claimed | Evidence & Implementation Files | Verification Method / Command |
 | :-: | :--- | :-: | :-: | :--- | :--- |
 | **1** | **Problem Description** | 2 | **2** | [docs/PROBLEM_DESCRIPTION.md](docs/PROBLEM_DESCRIPTION.md) & [§Problem Summary](#problem--solution-summary) | Comprehensive problem context, target personas, and 5 student failure modes |
-| **2** | **Product Specification** | 2 | **2** | [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md), [API Contract](docs/specs/API_CONTRACT.md), [DB Schema](docs/specs/DATABASE_SCHEMA.md) | Features F1–F8, architecture, data model, security, and acceptance criteria AC1–AC6 |
+| **2** | **Product Specification** | 2 | **2** | [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md), [API Contract](docs/specs/API_CONTRACT.md), [DB Schema](docs/specs/DATABASE_SCHEMA.md), [Public Task Board](https://github.com/users/DemidenkoD/projects/4/views/1) | Features F1–F8, architecture, data model, security, acceptance criteria AC1–AC6, and groomed backlog |
 | **3** | **Agent Team Specification** | 2 | **2** | [docs/specs/AGENT_TEAM_SPEC.md](docs/specs/AGENT_TEAM_SPEC.md), [.agents/agents/](.agents/agents/) | 6 non-overlapping development tracks + 6 runtime agent schemas |
 | **4** | **Context Management** | 2 | **2** | Hierarchical [AGENTS.md](AGENTS.md) files + 5 modular [.agents/skills/](.agents/skills/) | Progressive disclosure: root, backend, frontend, infra `AGENTS.md` + reusable skills |
 | **5** | **Application** | 2 | **2** | [docker-compose.yml](docker-compose.yml), [backend/](backend/), [frontend/](frontend/) | `make up` boots full-stack app end-to-end locally with single command |
