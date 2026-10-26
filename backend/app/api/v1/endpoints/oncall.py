@@ -4,7 +4,7 @@
 - POST /api/v1/oncall/webhook — Alertmanager native webhook (shared secret,
   NO user JWT). Dedupes on fingerprint+startsAt, persists redacted payload +
   synchronous agent diagnosis, returns 202 with incident IDs.
-- GET /api/v1/oncall/incidents — History list (JWT, ?status&?limit).
+- GET /api/v1/oncall/incidents — History list (JWT, ?status&?limit&?project_id).
 - GET /api/v1/oncall/incidents/{id} — History detail with remediation plan (JWT).
 - POST /api/v1/oncall/incidents/{id}/acknowledge — mark acknowledged + note (JWT).
 
@@ -16,6 +16,7 @@ before persistence; no email column exists on oncall_incidents.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import secrets
@@ -167,6 +168,112 @@ def _incident_to_detail_schema(inc: OnCallIncident) -> OnCallIncidentDetailSchem
     )
 
 
+def create_security_incident(
+    db: Session,
+    project_id: UUID,
+    rule_id: str,
+    severity: str,
+    file_path: str | None,
+    commit_sha: str,
+    summary: str,
+    remediation_hints: list[str] | None = None,
+) -> OnCallIncident:
+    """Track-1-owned creator linking critical/high scanner findings to History.
+
+    Called by Track 3's ``_persist_security_report`` (which must import — not
+    reimplement — this function). Signature is stable: do not rename params.
+
+    Builds ``alert_name="SecurityCritical:{rule_id}"``,
+    ``fingerprint=sha256(rule_id|file_path|commit_sha)hex[0:32]``,
+    ``service="security-scanner"``, ``status=firing`` and a ``diagnosis_json``
+    shaped like ``OnCallDiagnosisResponse`` (``confidence=0.75``,
+    ``read_only_verified=True``; remediation stored as text only, never
+    executed). Dedupes on ``fingerprint`` alone within the same
+    ``project_id`` + ``commit_sha`` — returns the existing row instead of
+    inserting a duplicate. ``starts_at`` is now UTC at creation time.
+    Payloads are redacted of emails/JWTs/secrets before persistence; no email
+    is ever stored (zero persistent email invariant).
+    """
+    normalized_severity = (severity or "unknown").strip().lower() or "unknown"
+    if normalized_severity not in ("critical", "high"):
+        normalized_severity = (severity or "unknown").strip() or "unknown"
+    fingerprint = hashlib.sha256(
+        f"{rule_id}|{file_path or ''}|{commit_sha}".encode("utf-8")
+    ).hexdigest()[:32]
+    alert_name = f"SecurityCritical:{rule_id}"
+    hints = [str(h) for h in (remediation_hints or []) if str(h).strip()]
+
+    existing = (
+        db.query(OnCallIncident)
+        .filter(
+            OnCallIncident.fingerprint == fingerprint,
+            OnCallIncident.project_id == project_id,
+        )
+        .all()
+    )
+    for row in existing:
+        payload = row.alert_payload_json or {}
+        if isinstance(payload, dict) and payload.get("commit_sha") == commit_sha:
+            return row
+    if existing and commit_sha:
+        # Fallback: same fingerprint + project, payload redaction may differ;
+        # treat fingerprint alone as the dedupe key per the bridge contract.
+        for row in existing:
+            payload = row.alert_payload_json or {}
+            if not isinstance(payload, dict) or "commit_sha" not in payload:
+                return row
+
+    now = datetime.now(timezone.utc)
+    redacted_summary = _redact_text(summary or "")
+    redacted_hints = [_redact_text(h) for h in hints]
+    redacted_path = _redact_text(file_path) if file_path else ""
+    diagnosis = OnCallDiagnosisResponse(
+        incident_summary=redacted_summary
+        or f"Critical security finding '{rule_id}' detected by security scanner.",
+        root_cause_hypothesis=(
+            f"Scanner rule '{rule_id}' flagged "
+            f"{redacted_path or 'repository content'} at commit {commit_sha}."
+        ),
+        confidence=0.75,
+        evidence_citations=[
+            {
+                "source": "security-scanner",
+                "query": rule_id,
+                "excerpt": redacted_path,
+            }
+        ],
+        recommended_actions=redacted_hints,
+        read_only_verified=True,
+    )
+    redacted_payload = _redact_json(
+        {
+            "rule_id": rule_id,
+            "severity": normalized_severity,
+            "file_path": file_path,
+            "commit_sha": commit_sha,
+            "summary": summary,
+        }
+    )
+    row = OnCallIncident(
+        alert_name=alert_name,
+        severity=normalized_severity,
+        service="security-scanner",
+        status=OnCallIncidentStatus.FIRING,
+        fingerprint=fingerprint,
+        starts_at=now,
+        ends_at=None,
+        alert_payload_json=redacted_payload,
+        diagnosis_json=diagnosis.model_dump(mode="json"),
+        confidence=float(diagnosis.confidence or 0.0),
+        read_only_verified=True,
+        project_id=project_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 @router.post("/oncall/diagnose", response_model=OnCallDiagnosisResponse)
 def diagnose(
     body: OnCallDiagnoseRequest,
@@ -284,12 +391,15 @@ def alertmanager_webhook(
 def list_incidents(
     incident_status: OnCallIncidentStatus | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=200),
+    project_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
     _user: UserProfileSchema = Depends(get_current_user),
 ) -> list[OnCallIncidentSchema]:
     query = db.query(OnCallIncident)
     if incident_status is not None:
         query = query.filter(OnCallIncident.status == incident_status)
+    if project_id is not None:
+        query = query.filter(OnCallIncident.project_id == project_id)
     rows = (
         query.order_by(OnCallIncident.starts_at.desc()).limit(limit).all()
     )

@@ -261,8 +261,9 @@ Alertmanager native webhook receiver — persists alerts as history rows with a 
 - **Response `202 Accepted` (`OnCallWebhookResponse`)**: `{ "incidents": [OnCallIncidentSchema, ...] }`
 
 ### `GET /api/v1/oncall/incidents`
-Lists persisted incidents for the History tab (auth required). Supports `?status=firing|acknowledged|resolved` and `?limit=` (1–200, default 50), newest first.
+Lists persisted incidents for the History tab (auth required). Supports `?status=firing|acknowledged|resolved`, `?limit=` (1–200, default 50), and optional `?project_id=<uuid>` (project-scoped view when present; global cross-project view when omitted — backward-compatible), newest first.
 - **Response `200 OK`**: `list[OnCallIncidentSchema]`
+- **Security-scanner bridge:** critical/high scanner findings are linked into this History view by Track 3's `_persist_security_report`, which calls Track 1's stable creator `create_security_incident(db, project_id, rule_id, severity, file_path, commit_sha, summary, remediation_hints)` (Track 1 owns the creator; Track 3 only imports and calls it — do NOT reimplement the call here). Bridge rows use `alert_name="SecurityCritical:{rule_id}"`, `severity` passthrough (`critical`|`high`), `service="security-scanner"`, `fingerprint=sha256(rule_id|file_path|commit_sha)hex[0:32]`, `project_id=<real project uuid>`, `status=firing`, `diagnosis_json` built from the Security Reviewer summary (`incident_summary`, `root_cause_hypothesis`, `confidence=0.75`, `evidence_citations=[{source:"security-scanner", query:rule_id, excerpt:file_path}]`, `recommended_actions=[hints]`, `read_only_verified=true`). Dedupe on `fingerprint` alone within the same `project_id`+`commit_sha` (return existing instead of duplicate). Payloads are redacted of emails/JWTs/secrets before persistence; webhook behavior is unchanged (infra alerts still persist with `project_id=None`).
 
 ### `GET /api/v1/oncall/incidents/{incident_id}`
 Returns a single incident with its redacted payload and full diagnosis/remediation plan (auth required).

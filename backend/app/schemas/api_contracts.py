@@ -563,6 +563,20 @@ class OnCallWebhookResponse(BaseModel):
     incidents: list[OnCallIncidentSchema] = Field(default_factory=list)
 
 
+class OnCallIncidentListQuery(BaseModel):
+    """Query params for GET /api/v1/oncall/incidents (docs/specs/API_CONTRACT.md §8).
+
+    `project_id` is optional: present → project-scoped view; omitted →
+    global cross-project view (backward-compatible).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: OnCallIncidentStatus | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    project_id: UUID | None = None
+
+
 class AcknowledgeRequest(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 

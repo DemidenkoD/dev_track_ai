@@ -62,8 +62,19 @@ function formatDate(iso: string): string {
  * remediation plan (`GET .../incidents/{id}`) with an acknowledge action
  * (`POST .../incidents/{id}/acknowledge`). The agent is read-only and
  * advisory: remediation steps are text to copy, never executed.
+ *
+ * Part A scoping (no contract dependency): `projectName` / `securityTabHref`
+ * only adjust the scope-note copy + link. The global `/oncall` route renders
+ * `<OnCallPanel />` with defaults (generic text, no link).
  */
-export function OnCallPanel(): JSX.Element {
+// TODO(Part B): add optional `projectId?: string` filter prop here once the
+// Track 1 `?project_id` contract lands — wire it through to
+// `listOnCallIncidents()` so the project tab shows only its own alerts.
+export interface OnCallPanelProps {
+  projectName?: string;
+  securityTabHref?: string;
+}
+export function OnCallPanel({ projectName, securityTabHref }: OnCallPanelProps = {}): JSX.Element {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [incidents, setIncidents] = useState<OnCallIncident[]>([]);
   const [listLoading, setListLoading] = useState(true);
@@ -201,6 +212,17 @@ export function OnCallPanel(): JSX.Element {
   return (
     <section aria-label="Alert history" className="stack" data-testid="incident-history">
       <AdvisoryBanner detail="Alert History is read-only and advisory. Diagnoses explain past alerts and propose human-approved next steps — nothing is executed automatically." />
+
+      <p role="note" data-testid="history-scope-note" className="muted small">
+        Operational alerts only{projectName ? ` for ${projectName}` : null} — code findings live
+        under Security tab. Critical scanner findings now also raise History entries.
+        {securityTabHref ? (
+          <>
+            {' '}
+            <a href={securityTabHref}>View Security findings</a>
+          </>
+        ) : null}
+      </p>
 
       <div className="card stack">
         <header className="card-header">

@@ -382,7 +382,9 @@ export function ProjectDetailPage(): JSX.Element {
           checking={checkingDeploy}
         />
       )}
-      {tab === 'oncall' && <OnCallPanel />}
+      {tab === 'oncall' && (
+        <OnCallPanel projectName={project.name} securityTabHref="?tab=security" />
+      )}
       {tab === 'settings' && (
         <ProjectSettingsPanel project={project} onUpdated={(updated) => setProject(updated)} />
       )}
